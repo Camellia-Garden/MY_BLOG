@@ -8,6 +8,8 @@
   const app = document.querySelector('#app');
   let isNight = false;
   try { isNight = localStorage.getItem('blog-theme') === 'night'; } catch {}
+  // Warm the night cover while another page is open, before the home cover is rebuilt.
+  if (isNight) { const nightCover = new Image(); nightCover.src = '/assets/wallpaper-night.png'; }
   function applyTheme() {
     document.body.classList.toggle('night-mode', isNight);
     document.querySelectorAll('[data-theme-toggle]').forEach(button => { button.setAttribute('aria-pressed', String(isNight)); button.querySelector('.theme-name').textContent = isNight ? '日间模式' : '夜间模式'; button.querySelector('.theme-symbol').textContent = isNight ? '☀' : '☾'; });
@@ -388,11 +390,15 @@
       const url = images[index++ % images.length], image = new Image();
       image.onload = () => {
         failures = 0;
-        const target = panels[current];
+        const target = panels[current], previous = panels[1-current];
+        const reducedMotion = matchMedia('(prefers-reduced-motion: reduce)').matches;
         target.style.backgroundImage = `url("${url}")`;
-        target.classList.add('visible'); panels[1-current].classList.remove('visible');
+        target.style.zIndex = '1'; previous.style.zIndex = '0';
+        target.classList.add('visible');
+        if (reducedMotion) previous.classList.remove('visible');
+        else setTimeout(() => previous.classList.remove('visible'), 3100);
         document.body.classList.add('has-wallpaper-background'); current = 1-current;
-        if (!matchMedia('(prefers-reduced-motion: reduce)').matches) setTimeout(next, 18000);
+        if (!reducedMotion) setTimeout(next, 18000);
       };
       image.onerror = () => { if (++failures < images.length) next(); };
       image.src = url;
