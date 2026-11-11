@@ -179,7 +179,10 @@ body.theme-changing::after{content:"";position:fixed;inset:0;z-index:9999;pointe
 @media(prefers-reduced-motion:reduce){.chosen-home .art-space .character{transition:none}body.theme-changing::after{animation:none;display:none}}
 
 /* Night cover is layered over the day cover only after the image loads. */
-.cover-picture-night{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;opacity:0;pointer-events:none;transition:opacity .5s ease}
+.cover-picture-night{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;opacity:0;pointer-events:none}
+body.theme-changing .cover-picture-night{transition:opacity .5s ease}
+body.night-mode .chosen-home .cover{background:#182131}
+body.night-mode:not(.theme-changing) .chosen-home .cover-picture{visibility:hidden}
 body.night-mode .cover.night-cover-ready .cover-picture-night{opacity:1}
 @media(prefers-reduced-motion:reduce){.cover-picture-night{transition:none}}
 
