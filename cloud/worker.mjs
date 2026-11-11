@@ -56,6 +56,19 @@ async function imageUpload(request, env) {
   await env.IMAGES.put(path.slice(1), bytes, {httpMetadata:{contentType:type}});
   return json({url:path});
 }
+async function projectFileUpload(request, env) {
+  let name; try { name = decodeURIComponent(request.headers.get('X-File-Name') || '').replace(/[\/\\\x00-\x1f\x7f]/g,'').trim(); } catch { return json({error:'文件名无效'},400); }
+  if (!name || name.length > 150) return json({error:'文件名无效或过长'},400);
+  let bytes; try { bytes = await readLimited(request, 10 * 1024 * 1024); } catch (error) { if (error instanceof RangeError) return json({error:'文件不能超过 10 MB'},413); throw error; }
+  if (!bytes.length) return json({error:'文件不能为空'},400);
+  const path = `/personal/project-files/${crypto.randomUUID()}`;
+  await env.IMAGES.put(path.slice(1), bytes, {httpMetadata:{contentType:'application/octet-stream'}});
+  return json({url:path,name});
+}
+async function projectFileRead(path, env) {
+  const object = await env.IMAGES.get(path.slice(1)); if (!object) return new Response('Not found',{status:404});
+  return new Response(object.body,{headers:{'Content-Type':'application/octet-stream','Content-Disposition':'attachment','X-Content-Type-Options':'nosniff','Cache-Control':'public, max-age=3600'}});
+}
 async function imageRead(path, env) {
   const object = await env.IMAGES.get(path.slice(1));
   if (!object) return new Response('Not found', {status:404});
@@ -83,6 +96,7 @@ export default {
         if (!state) return new Response('/* 博客数据尚未初始化 */', {status:503, headers:{'Content-Type':'application/javascript; charset=utf-8','Cache-Control':'no-store'}});
         return new Response(`window.BLOG_DATA = ${JSON.stringify(state.data)};`, {headers:{'Content-Type':'application/javascript; charset=utf-8','Cache-Control':'no-store','X-Content-Type-Options':'nosniff'}});
       }
+      if (/^\/personal\/project-files\/[a-f0-9-]{36}$/.test(path) && request.method === 'GET') return await projectFileRead(path, env);
       if (publicImagePath(path) && request.method === 'GET') return await imageRead(path, env);
       if (path === '/editor' || path === '/editor.html') {
         if (request.method !== 'GET') return json({error:'方法不支持'}, 405);
@@ -96,10 +110,11 @@ export default {
         const state = await readState(env.DB);
         return state ? json(state.data, 200, {'ETag':`"${state.revision}"`,'X-Blog-Revision':state.revision}) : json({error:'博客数据尚未初始化'}, 503);
       }
-      if ((path === '/api/save' || path === '/api/image') && request.method === 'POST') {
+      if ((path === '/api/save' || path === '/api/image' || path === '/api/project-file') && request.method === 'POST') {
         if (!trustedOrigin(request, env)) return json({error:'请求来源无效'}, 403);
         if (!(await isAdmin(request, env))) return json({error:'请先登录'}, 401);
         if (path === '/api/image') return await imageUpload(request, env);
+        if (path === '/api/project-file') return await projectFileUpload(request, env);
         if (!(request.headers.get('Content-Type') || '').toLowerCase().startsWith('application/json')) return json({error:'格式不正确'}, 415);
         let raw;
         try { raw = new TextDecoder().decode(await readLimited(request, 8_000_000)); }

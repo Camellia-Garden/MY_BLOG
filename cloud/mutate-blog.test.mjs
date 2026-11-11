@@ -32,3 +32,12 @@ test('profile, moments and project edits keep their existing validation', () => 
   assert.equal(data.projects[0].title, 'project');
   assert.throws(() => applyMutation(data, {kind:'project',index:-1,title:'bad',description:'',category:'',url:'javascript:alert(1)'}), /链接须以/);
 });
+test('project edits retain legacy fields and validate uploaded file paths', () => {
+  const original = {projects:[{title:'旧项目',description:'旧简介',category:'收藏',url:'https://example.com',extra:'keep'}]};
+  const file = {name:'项目.zip',url:'/personal/project-files/12345678-1234-1234-1234-123456789abc'};
+  const updated = applyMutation(original,{kind:'project',index:0,title:'旧项目',description:'旧简介',category:'收藏',url:'https://example.com',details:'介绍',instructions:'使用方法',files:[file]});
+  assert.equal(updated.projects[0].extra,'keep'); assert.equal(updated.projects[0].details,'介绍'); assert.deepEqual(updated.projects[0].files,[file]); assert.ok(updated.projects[0].id);
+  const oldClient = applyMutation(updated,{kind:'project',index:0,title:'旧项目',description:'旧简介',category:'收藏',url:'https://example.com'});
+  assert.equal(oldClient.projects[0].instructions,'使用方法'); assert.deepEqual(oldClient.projects[0].files,[file]);
+  assert.throws(() => applyMutation(original,{kind:'project',index:0,title:'a',description:'',category:'',url:'',files:[{name:'x',url:'https://evil.example/'}]}),/项目文件无效/);
+});

@@ -74,6 +74,18 @@ http.createServer((req,res) => {
       } catch(error) { reply(res,400,{error:error.message}); } });
       return;
     }
+    if (req.method === 'POST' && pathname === '/api/project-file') {
+      if (req.headers.origin !== origin || req.headers['x-blog-editor'] !== '1') return reply(res,403,{error:'请求来源无效'});
+      let name; try { name = decodeURIComponent(String(req.headers['x-file-name'] || '')).replace(/[\/\\\x00-\x1f\x7f]/g,'').trim(); } catch { return reply(res,400,{error:'文件名无效'}); }
+      if (!name || name.length > 150) return reply(res,400,{error:'文件名无效或过长'});
+      let size = 0, chunks = [], tooLarge = false;
+      req.on('data',chunk => { size += chunk.length; if (size > 10 * 1024 * 1024) { tooLarge = true; chunks = []; } else if (!tooLarge) chunks.push(chunk); });
+      req.on('end',() => { try { if (tooLarge || !size) return reply(res,400,{error:'文件不能为空且不能超过 10 MB'}); const id = crypto.randomUUID(), dir = path.join(root,'personal','project-files'); fs.mkdirSync(dir,{recursive:true}); fs.writeFileSync(path.join(dir,id),Buffer.concat(chunks),{flag:'wx'}); reply(res,200,{url:`/personal/project-files/${id}`,name}); } catch { reply(res,500,{error:'文件上传失败'}); } }); return;
+    }
+    if (req.method === 'GET' && /^\/personal\/project-files\/[a-f0-9-]{36}$/.test(pathname)) {
+      const file = path.join(root,pathname.slice(1)); if (!fs.existsSync(file)) return reply(res,404,'Not found','text/plain; charset=utf-8');
+      res.writeHead(200,{'Content-Type':'application/octet-stream','Content-Disposition':'attachment','X-Content-Type-Options':'nosniff'}); return fs.createReadStream(file).pipe(res);
+    }
     if (req.method === 'POST' && pathname === '/api/save') {
       if (req.headers.origin !== origin || req.headers['x-blog-editor'] !== '1' || !String(req.headers['content-type']).startsWith('application/json')) return reply(res,403,{error:'请求来源无效'});
       let body = ''; req.setEncoding('utf8');
@@ -153,7 +165,11 @@ http.createServer((req,res) => {
           const index = Number(payload.index); if (!Number.isInteger(index) || index < -1 || index >= data.projects.length) throw new Error('项目不存在');
           const title = text(payload.title,150), url = text(payload.url,1000); if (!title) throw new Error('请填写项目名称');
           if (url && !/^https?:\/\//i.test(url)) throw new Error('链接须以 http:// 或 https:// 开头');
-          const next = {title,description:text(payload.description,1000),category:text(payload.category,40) || '收藏',url};
+          const old = index < 0 ? null : data.projects[index];
+          const files = payload.files === undefined ? (old?.files || []) : payload.files;
+          if (!Array.isArray(files) || files.length > 20) throw new Error('每个项目最多添加 20 个文件');
+          const checkedFiles = files.map(file => { const name = text(file.name,150), link = text(file.url,1000); if (!name || !/^\/personal\/project-files\/[a-f0-9-]{36}$/.test(link)) throw new Error('项目文件无效'); return {name,url:link}; });
+          const next = {...old,id:old?.id || crypto.randomUUID(),title,description:text(payload.description,1000),category:text(payload.category,40) || '收藏',url,details:text(payload.details === undefined ? (old?.details || '') : payload.details,10000),instructions:text(payload.instructions === undefined ? (old?.instructions || '') : payload.instructions,10000),files:checkedFiles};
           if (index < 0) data.projects.unshift(next); else data.projects[index] = next;
         } else throw new Error('未知的保存类型');
         writeData(data); reply(res,200,{ok:true});

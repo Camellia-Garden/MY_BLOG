@@ -81,3 +81,18 @@ test('HTTP requests for this site redirect to HTTPS without trusting other hosts
   assert.equal((await worker.fetch(new Request('http://other.example/blog-data.js'), env)).status, 404);
   assert.equal((await worker.fetch(new Request('https://camellia.example/'), env)).status, 200);
 });
+
+test('project file uploads require admin and downloads are attachments', async () => {
+  const {env, cookie} = await context();
+  const bytes = Uint8Array.from([0,1,2,3,255]);
+  const headers = {Origin:origin,'X-Blog-Editor':'1','X-File-Name':encodeURIComponent('示例.zip'),'Content-Type':'application/octet-stream'};
+  assert.equal((await worker.fetch(request('/api/project-file',{method:'POST',headers,body:bytes}),env)).status,401);
+  assert.equal((await worker.fetch(request('/api/project-file',{method:'POST',headers:{...headers,Origin:'https://other.example',Cookie:cookie},body:bytes}),env)).status,403);
+  const upload = await worker.fetch(request('/api/project-file',{method:'POST',headers:{...headers,Cookie:cookie},body:bytes}),env);
+  assert.equal(upload.status,200); const file = await upload.json();
+  assert.equal(file.name,'示例.zip'); assert.match(file.url,/^\/personal\/project-files\/[a-f0-9-]{36}$/);
+  const download = await worker.fetch(request(file.url),env);
+  assert.equal(download.status,200); assert.equal(download.headers.get('Content-Disposition'),'attachment');
+  assert.equal(download.headers.get('Content-Type'),'application/octet-stream');
+  assert.deepEqual(new Uint8Array(await download.arrayBuffer()),bytes);
+});
