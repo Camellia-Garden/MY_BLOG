@@ -450,14 +450,7 @@
     const targets = app.querySelectorAll('.inner-page, .chosen-home .cover-center, .chosen-home .home-inner');
     pageEntranceAnimations = Array.from(targets, target => {
       if (typeof target.animate !== 'function') return null;
-      // The cover title is centered with a transform; retain it throughout the animation.
-      const center = target.classList.contains('cover-center') ? 'translate(-50%, -45%) ' : '';
-      const frames = [
-        {opacity:.35,transform:center + 'translateY(18px) scale(.985)',offset:0},
-        {opacity:1,transform:center + 'translateY(-4px) scale(1.003)',offset:.72},
-        {opacity:1,transform:center + 'translateY(0) scale(1)',offset:1}
-      ];
-      return target.animate(frames,{duration:540,easing:'ease-out'});
+      return target.animate([{opacity:.65},{opacity:1}],{duration:220,easing:'ease-out'});
     }).filter(Boolean);
   }
   document.querySelector('#year').textContent = new Date().getFullYear(); document.querySelector('#brand-name').textContent = config.name || 'Camellia'; const githubLink = document.querySelector('.github'); githubLink.href = safeUrl(config.github) || '#about'; window.addEventListener('hashchange', () => {
