@@ -23,7 +23,7 @@
   function imagePreviews() {
     for (const [id, paths] of [['post-cover-preview', postCover ? [postCover] : []], ['moment-image-preview', momentImages], ['album-image-preview', albumImages]]) {
       const root = byId(id); root.replaceChildren();
-      paths.forEach((path,index) => { const item = document.createElement('div'); item.className = 'image-preview'; const img = document.createElement('img'); img.src = path; img.alt = '图片预览'; const button = document.createElement('button'); button.type = 'button'; button.textContent = '移除'; button.setAttribute('aria-label', `移除图片 ${index + 1}`); button.addEventListener('click', () => { if (id === 'post-cover-preview') postCover = ''; else if (id === 'moment-image-preview') momentImages.splice(index,1); else albumImages.splice(index,1); imagePreviews(); }); item.append(img,button); root.append(item); });
+      paths.forEach((path,index) => { const item = document.createElement('div'); item.className = 'image-preview'; const img = document.createElement('img'); img.src = path; img.alt = id === 'album-image-preview' ? `查看并旋转照片 ${index + 1}` : '图片预览'; if (id === 'album-image-preview') { img.tabIndex = 0; img.setAttribute('role','button'); img.addEventListener('click', () => openAlbumPhoto(index)); img.addEventListener('keydown', e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); openAlbumPhoto(index); } }); } const button = document.createElement('button'); button.type = 'button'; button.textContent = '移除'; button.setAttribute('aria-label', `移除图片 ${index + 1}`); button.addEventListener('click', () => { if (id === 'post-cover-preview') postCover = ''; else if (id === 'moment-image-preview') momentImages.splice(index,1); else albumImages.splice(index,1); imagePreviews(); }); item.append(img,button); root.append(item); });
     }
   }
   async function upload(file) {
@@ -50,7 +50,67 @@
   byId('remove-post-cover').addEventListener('click', () => { postCover = ''; imagePreviews(); });
   byId('post-image-file').addEventListener('change', e => { const field = posts.elements.body; let position = field.selectionStart; uploadFiles(e.target, async url => { const value = `\n![文章图片](${url})\n`; field.setRangeText(value, position, position, 'end'); position += value.length; }); });
   byId('moment-image-file').addEventListener('change', e => { if (momentImages.length + e.target.files.length > 9) { message('一条动态最多添加 9 张图片',true); e.target.value = ''; return; } uploadFiles(e.target, async url => { momentImages.push(url); imagePreviews(); }); });
-  byId('album-image-file').addEventListener('change', e => { if (albumImages.length + e.target.files.length > 50) { message('每本相册最多添加 50 张照片',true); e.target.value = ''; return; } uploadFiles(e.target, async url => { albumImages.push(url); imagePreviews(); }); });
+  const ALBUM_TARGET_BYTES = 5 * 1024 * 1024;
+  function readPhoto(source) {
+    return new Promise((resolve,reject) => { const image = new Image(); const temporary = source instanceof Blob ? URL.createObjectURL(source) : ''; image.onload = () => { if (temporary) URL.revokeObjectURL(temporary); resolve(image); }; image.onerror = () => { if (temporary) URL.revokeObjectURL(temporary); reject(new Error('无法读取这张图片，请换用 JPG、PNG 或 WebP')); }; image.src = temporary || source; });
+  }
+  function canvasBlob(canvas, type, quality) { return new Promise((resolve,reject) => canvas.toBlob(blob => blob ? resolve(blob) : reject(new Error('图片处理失败')),type,quality)); }
+  async function encodePhoto(image, type, rotation = 0) {
+    let width = image.naturalWidth, height = image.naturalHeight;
+    if (!width || !height) throw new Error('无法读取图片尺寸');
+    const maxPixels = 24000000, maxSide = 10000;
+    let scale = Math.min(1, Math.sqrt(maxPixels / (width * height)), maxSide / Math.max(width,height));
+    const preserveAlpha = type === 'image/png' || type === 'image/webp';
+    const outputType = preserveAlpha ? 'image/webp' : 'image/jpeg';
+    const turn = ((rotation % 360) + 360) % 360;
+    for (let attempt = 0; attempt < 7; attempt++) {
+      const w = Math.max(1,Math.round(width * scale)), h = Math.max(1,Math.round(height * scale));
+      const canvas = document.createElement('canvas'); canvas.width = turn % 180 ? h : w; canvas.height = turn % 180 ? w : h;
+      const ctx = canvas.getContext('2d'); if (!ctx) throw new Error('设备无法处理这张图片');
+      ctx.translate(canvas.width / 2,canvas.height / 2); ctx.rotate(turn * Math.PI / 180); ctx.drawImage(image,-w / 2,-h / 2,w,h);
+      for (const quality of [.92,.85,.78,.7]) { const blob = await canvasBlob(canvas,outputType,quality); if (blob.size && blob.size <= ALBUM_TARGET_BYTES) { canvas.width = 1; canvas.height = 1; return blob; } if (blob.type === 'image/png') break; }
+      canvas.width = 1; canvas.height = 1; scale *= .82;
+    }
+    throw new Error('图片过大，自动压缩失败，请换一张图片');
+  }
+  async function prepareAlbumPhoto(file) {
+    const type = String(file.type || '').toLowerCase();
+    if (type === 'image/gif') { if (file.size > ALBUM_TARGET_BYTES) throw new Error('GIF 动图超过 5 MB，暂不支持自动压缩以免丢失动画'); return file; }
+    if (!type.startsWith('image/')) throw new Error('请选择图片文件');
+    if (file.size <= ALBUM_TARGET_BYTES && ['image/png','image/jpeg','image/webp'].includes(type)) return file;
+    return encodePhoto(await readPhoto(file),type);
+  }
+  function albumBusy(busy) {
+    uploading = busy; albums.elements.selection.disabled = busy; byId('album-image-file').disabled = busy;
+    albums.querySelectorAll('#album-image-preview button, #delete-album, .album-photo-actions button').forEach(button => button.disabled = busy);
+    document.querySelectorAll('button[type=submit]').forEach(button => button.disabled = busy || (button.form === moments && !byId('moment-service-warning').hidden));
+  }
+  byId('album-image-file').addEventListener('change', async e => {
+    const input = e.target, files = Array.from(input.files); input.value = '';
+    if (!files.length || uploading) return;
+    if (albumImages.length + files.length > 50) { message('每本相册最多添加 50 张照片',true); return; }
+    albumBusy(true); const progress = byId('album-upload-progress'); progress.replaceChildren();
+    const rows = files.map(file => { const row = document.createElement('div'); row.textContent = `${file.name}：等待上传`; progress.append(row); return row; });
+    const results = Array(files.length); let next = 0;
+    async function runQueue() { while (next < files.length) { const index = next++, file = files[index]; try { rows[index].textContent = `${file.name}：处理中…`; const prepared = await prepareAlbumPhoto(file); rows[index].textContent = `${file.name}：上传中…`; results[index] = await upload(prepared); rows[index].textContent = `${file.name}：已上传${prepared.size < file.size ? '（已压缩）' : ''}`; } catch(error) { rows[index].textContent = `${file.name}：${error.message || '上传失败'}`; } } }
+    try { await Promise.all(Array.from({length:Math.min(2,files.length)},runQueue)); albumImages.push(...results.filter(Boolean)); imagePreviews(); const failed = files.length - results.filter(Boolean).length; message(failed ? `已添加 ${files.length - failed} 张，${failed} 张失败；可继续添加，完成后请保存相册。` : `已添加 ${files.length} 张，请保存相册。`,!!failed); }
+    finally { albumBusy(false); }
+  });
+  let albumPhotoIndex = -1, albumPhotoOriginal = '', albumPhotoRotation = 0;
+  function openAlbumPhoto(index) { if (uploading || !albumImages[index]) return; albumPhotoIndex = index; albumPhotoOriginal = albumImages[index]; albumPhotoRotation = 0; byId('album-photo-error').hidden = true; byId('album-photo-error').textContent = ''; const image = byId('album-photo-large'); image.src = albumPhotoOriginal; image.style.transform = ''; byId('album-photo-editor').hidden = false; byId('album-rotate-left').focus(); }
+  function closeAlbumPhoto() { byId('album-photo-editor').hidden = true; byId('album-photo-large').removeAttribute('src'); albumPhotoIndex = -1; }
+  function rotateAlbumPhoto(delta) { albumPhotoRotation = (albumPhotoRotation + delta + 360) % 360; byId('album-photo-large').style.transform = `rotate(${albumPhotoRotation}deg)`; }
+  byId('album-rotate-left').addEventListener('click', () => rotateAlbumPhoto(-90));
+  byId('album-rotate-right').addEventListener('click', () => rotateAlbumPhoto(90));
+  byId('album-rotate-cancel').addEventListener('click',closeAlbumPhoto);
+  byId('album-rotate-save').addEventListener('click', async () => {
+    if (!albumPhotoRotation) { closeAlbumPhoto(); return; }
+    if (/\.gif(?:$|[?#])/i.test(albumPhotoOriginal)) { message('GIF 动图暂不支持旋转，以免丢失动画',true); closeAlbumPhoto(); return; }
+    const index = albumPhotoIndex, original = albumPhotoOriginal, rotation = albumPhotoRotation; albumBusy(true); message('正在处理照片方向…');
+    try { const response = await fetch(original); if (!response.ok) throw new Error('无法读取原照片'); const source = await response.blob(); if (source.type === 'image/gif') throw new Error('GIF 动图暂不支持旋转，以免丢失动画'); const result = await encodePhoto(await readPhoto(source),source.type,rotation); const url = await upload(result); if (albumImages[index] !== original) throw new Error('相册已变化，请重新操作'); albumImages[index] = url; closeAlbumPhoto(); imagePreviews(); message('照片已旋转，请保存相册。'); }
+    catch(error) { const errorBox = byId('album-photo-error'); errorBox.textContent = error.message || '旋转失败'; errorBox.hidden = false; message(error.message || '旋转失败',true); }
+    finally { albumBusy(false); }
+  });
   let projectFiles = [];
   function showProjectFiles() { const root = byId('project-file-list'); root.replaceChildren(); projectFiles.forEach((file,index) => { const row = document.createElement('p'); const name = document.createElement('span'); name.textContent = file.name + ' '; const button = document.createElement('button'); button.type = 'button'; button.className = 'text-button'; button.textContent = '移除'; button.addEventListener('click',() => { projectFiles.splice(index,1); showProjectFiles(); }); row.append(name,button); root.append(row); }); }
   function loadProject() { const p = data.projects[Number(projects.elements.selection.value)]; for (const key of ['title','description','category','url','details','instructions']) projects.elements[key].value = p?.[key] || ''; projectFiles = Array.isArray(p?.files) ? p.files.map(file => ({...file})) : []; showProjectFiles(); }
