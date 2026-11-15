@@ -18,6 +18,8 @@ test('post create, update and stale deletion preserve other content', () => {
 test('album mutations reject stale deletes and invalid image paths', () => {
   const album = {kind:'album',index:-1,title:'相册',description:'',images:[]};
   const created = applyMutation(empty(), album);
+  assert.throws(() => applyMutation(created, {...album,index:0,expectedAlbum:{title:'older'}}), /其他位置更新/);
+  assert.equal(applyMutation(created, {...album,index:0,expectedAlbum:created.albums[0]}).albums.length, 1);
   assert.throws(() => applyMutation(created, {kind:'delete-album',index:0,album:{title:'different'}}), /已变化/);
   assert.throws(() => applyMutation(empty(), {...album, images:['https://invalid.example/image.png']}), /路径无效/);
   const removed = applyMutation(created, {kind:'delete-album',index:0,album:created.albums[0]});

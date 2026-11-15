@@ -19,7 +19,8 @@
   }
   function loadPost() { const p = data.posts.find(item => item.slug === posts.elements.selection.value); for (const key of ['slug','title','category','excerpt','body']) posts.elements[key].value = p?.[key] || ''; posts.elements.tags.value = (p?.tags || []).join(', '); posts.elements.section.value = p ? (p.section === 'talk' ? 'talk' : 'posts') : (params.get('section') === 'talk' ? 'talk' : 'posts'); posts.elements.slug.readOnly = !!p; postCover = p?.cover || ''; byId('delete-post').hidden = !p; imagePreviews(); }
   function loadMoment() { const m = data.moments[Number(moments.elements.selection.value)]; moments.elements.text.value = m?.text || ''; moments.elements.mood.value = m?.mood || ''; moments.elements.tags.value = (m?.tags || []).join(', '); momentImages = [...(m?.images || [])]; byId('delete-moment').hidden = !m; imagePreviews(); }
-  function loadAlbum() { const a = data.albums[Number(albums.elements.selection.value)]; albums.elements.title.value = a?.title || ''; albums.elements.description.value = a?.description || ''; albumImages = [...(a?.images || [])]; byId('delete-album').hidden = !a; imagePreviews(); }
+  let loadedAlbumSelection = '-1', loadedAlbumSnapshot = null;
+  function loadAlbum() { loadedAlbumSelection = albums.elements.selection.value; const a = data.albums[Number(albums.elements.selection.value)]; loadedAlbumSnapshot = a ? JSON.parse(JSON.stringify(a)) : null; albums.elements.title.value = a?.title || ''; albums.elements.description.value = a?.description || ''; albumImages = [...(a?.images || [])]; byId('delete-album').hidden = !a; imagePreviews(); }
   function imagePreviews() {
     for (const [id, paths] of [['post-cover-preview', postCover ? [postCover] : []], ['moment-image-preview', momentImages], ['album-image-preview', albumImages]]) {
       const root = byId(id); root.replaceChildren();
@@ -80,22 +81,53 @@
     if (file.size <= ALBUM_TARGET_BYTES && ['image/png','image/jpeg','image/webp'].includes(type)) return file;
     return encodePhoto(await readPhoto(file),type);
   }
+  let albumUploadPromise = null, albumFailedFiles = [], albumSavePending = false;
+  function albumState(state, text) {
+    window.blogAlbumUnsaved = state !== 'saved' && state !== 'cancelled';
+    byId('album-cancel-pending').hidden = !window.blogAlbumUnsaved;
+    if (window.parent !== window) window.parent.postMessage({type:'blog-album-background',state,text}, location.origin);
+  }
+  window.addEventListener('beforeunload', event => { if (window.blogAlbumUnsaved) { event.preventDefault(); event.returnValue = ''; } });
+  function albumRecovery() {
+    byId('album-retry-failed').hidden = !albumFailedFiles.length;
+    byId('album-discard-failed').hidden = !albumFailedFiles.length;
+  }
   function albumBusy(busy) {
     uploading = busy; albums.elements.selection.disabled = busy; byId('album-image-file').disabled = busy;
-    albums.querySelectorAll('#album-image-preview button, #delete-album, .album-photo-actions button').forEach(button => button.disabled = busy);
-    document.querySelectorAll('button[type=submit]').forEach(button => button.disabled = busy || (button.form === moments && !byId('moment-service-warning').hidden));
+    albums.querySelectorAll('#album-image-preview button, #delete-album, .album-photo-actions button, .album-upload-recovery button').forEach(button => button.disabled = busy);
+    document.querySelectorAll('button[type=submit]').forEach(button => button.disabled = (busy && !(button.form === albums && albumUploadPromise && !albumSavePending)) || (button.form === moments && !byId('moment-service-warning').hidden));
   }
-  byId('album-image-file').addEventListener('change', async e => {
-    const input = e.target, files = Array.from(input.files); input.value = '';
+  function startAlbumUpload(files) {
     if (!files.length || uploading) return;
     if (albumImages.length + files.length > 50) { message('每本相册最多添加 50 张照片',true); return; }
-    albumBusy(true); const progress = byId('album-upload-progress'); progress.replaceChildren();
+    const progress = byId('album-upload-progress'); progress.replaceChildren();
     const rows = files.map(file => { const row = document.createElement('div'); row.textContent = `${file.name}：等待上传`; progress.append(row); return row; });
-    const results = Array(files.length); let next = 0;
-    async function runQueue() { while (next < files.length) { const index = next++, file = files[index]; try { rows[index].textContent = `${file.name}：处理中…`; const prepared = await prepareAlbumPhoto(file); rows[index].textContent = `${file.name}：上传中…`; results[index] = await upload(prepared); rows[index].textContent = `${file.name}：已上传${prepared.size < file.size ? '（已压缩）' : ''}`; } catch(error) { rows[index].textContent = `${file.name}：${error.message || '上传失败'}`; } } }
-    try { await Promise.all(Array.from({length:Math.min(2,files.length)},runQueue)); albumImages.push(...results.filter(Boolean)); imagePreviews(); const failed = files.length - results.filter(Boolean).length; message(failed ? `已添加 ${files.length - failed} 张，${failed} 张失败；可继续添加，完成后请保存相册。` : `已添加 ${files.length} 张，请保存相册。`,!!failed); }
-    finally { albumBusy(false); }
+    const results = Array(files.length); let next = 0, finished = 0;
+    albumFailedFiles = []; albumRecovery();
+    albumState('uploading', `照片上传中 0/${files.length}，请保持页面打开`);
+    async function runQueue() { while (next < files.length) { const index = next++, file = files[index]; try { rows[index].textContent = `${file.name}：处理中…`; const prepared = await prepareAlbumPhoto(file); rows[index].textContent = `${file.name}：上传中…`; results[index] = await upload(prepared); rows[index].textContent = `${file.name}：已上传${prepared.size < file.size ? '（已压缩）' : ''}`; } catch(error) { rows[index].textContent = `${file.name}：${error.message || '上传失败'}`; } finally { finished++; albumState('uploading', `照片上传中 ${finished}/${files.length}，请保持页面打开`); } } }
+    const memory = navigator.deviceMemory; const parallel = memory >= 4 && !/Android|iPhone|iPad/i.test(navigator.userAgent) ? 3 : 2;
+    albumUploadPromise = (async () => {
+      try {
+        await Promise.all(Array.from({length:Math.min(parallel,files.length)},runQueue));
+        albumImages.push(...results.filter(Boolean)); imagePreviews();
+        albumFailedFiles = files.filter((file,index) => !results[index]); albumRecovery();
+        const failed = albumFailedFiles.length;
+        if (failed) { const text = `${failed} 张照片上传失败，请重试或选择放弃失败照片`; message(text,true); albumState('failed',text); }
+        else if (!albumSavePending) { message('照片上传完成，请保存相册。'); albumState('awaiting-save','照片已上传，请返回编辑面板保存相册'); }
+        return {failed};
+      } finally { albumUploadPromise = null; albumBusy(albumSavePending); }
+    })();
+    albumBusy(true);
+  }
+  byId('album-image-file').addEventListener('change', e => {
+    const input = e.target, files = Array.from(input.files); input.value = '';
+    if (albumFailedFiles.length) { message('请先重试或放弃之前上传失败的照片。',true); return; }
+    startAlbumUpload(files);
   });
+  byId('album-retry-failed').addEventListener('click', () => { const files = [...albumFailedFiles]; startAlbumUpload(files); });
+  byId('album-discard-failed').addEventListener('click', () => { albumFailedFiles = []; albumRecovery(); message('已放弃失败照片，请保存相册。'); albumState('awaiting-save','请返回编辑面板保存相册'); });
+  byId('album-cancel-pending').addEventListener('click', () => { if (uploading || !confirm('确定放弃本次未保存的相册修改？已上传的文件不会删除。')) return; albumFailedFiles = []; albumRecovery(); loadAlbum(); message('已放弃本次未保存的相册修改。'); albumState('cancelled','已放弃未保存的相册修改'); });
   let albumPhotoIndex = -1, albumPhotoOriginal = '', albumPhotoRotation = 0;
   function openAlbumPhoto(index) { if (uploading || !albumImages[index]) return; albumPhotoIndex = index; albumPhotoOriginal = albumImages[index]; albumPhotoRotation = 0; byId('album-photo-error').hidden = true; byId('album-photo-error').textContent = ''; const image = byId('album-photo-large'); image.src = albumPhotoOriginal; image.style.transform = ''; byId('album-photo-editor').hidden = false; byId('album-rotate-left').focus(); }
   function closeAlbumPhoto() { byId('album-photo-editor').hidden = true; byId('album-photo-large').removeAttribute('src'); albumPhotoIndex = -1; }
@@ -126,7 +158,7 @@
     about.elements.about.value = settings.about || ''; about.elements.github.value = settings.github || ''; about.elements.interests.value = (settings.interests || []).join(', ');
     about.elements.timeline.value = (settings.timeline || []).map(x => `${x.date} | ${x.title} | ${x.text}`).join('\n'); refreshLists();
   }
-  async function save(payload) { const res = await fetch('/api/save',{method:'POST',headers:{'Content-Type':'application/json','X-Blog-Editor':'1'},body:JSON.stringify(payload)}); const result = await res.json(); if (!res.ok) throw new Error(result.error || '保存失败'); if (window.parent !== window) window.parent.postMessage({type:'blog-editor-saved'}, location.origin); await load(); message('已保存，关闭面板后页面会更新。'); }
+  async function save(payload) { const res = await fetch('/api/save',{method:'POST',headers:{'Content-Type':'application/json','X-Blog-Editor':'1'},body:JSON.stringify(payload)}); const result = await res.json(); if (!res.ok) throw new Error(result.error || '保存失败'); if (window.parent !== window) window.parent.postMessage({type:'blog-editor-saved'}, location.origin); try { await load(); } catch { const error = new Error('内容已保存，但读取最新数据失败，请刷新页面查看。'); error.saveSucceeded = true; throw error; } message('已保存，关闭面板后页面会更新。'); }
   function selectPanel(panel) { document.querySelectorAll('.editor-nav button').forEach(b => b.classList.toggle('selected',b.dataset.panel === panel)); document.querySelectorAll('.editor-panel').forEach(p => p.hidden = p.id !== panel); message(''); }
   document.querySelector('.editor-nav').addEventListener('click', e => { const button = e.target.closest('button'); if (button) selectPanel(button.dataset.panel); });
   byId('avatar-file').addEventListener('change', e => { const file = e.target.files[0]; if (!file) return; if (file.size > 1024*1024 || !['image/png','image/jpeg','image/webp','image/gif'].includes(file.type)) { message('请选择不超过 1 MB 的 PNG、JPG、WebP 或 GIF 图片。',true); e.target.value = ''; return; } const reader = new FileReader(); reader.onload = () => { avatar = reader.result; preview(); }; reader.readAsDataURL(file); });
@@ -134,13 +166,29 @@
   byId('cover-file').addEventListener('change', e => { const file=e.target.files[0]; if (!file) return; if(file.size>3*1024*1024 || !['image/png','image/jpeg','image/webp','image/gif'].includes(file.type)){message('请选择不超过 3 MB 的 PNG、JPG、WebP 或 GIF 图片。',true);e.target.value='';return} const reader=new FileReader(); reader.onload=()=>{coverWallpaper=reader.result}; reader.readAsDataURL(file); });
   byId('remove-cover').addEventListener('click',()=>{coverWallpaper='';byId('cover-file').value='';message('已选择默认壁纸，保存后生效。');});
   profile.addEventListener('submit',async e => { e.preventDefault(); try { await save({kind:'profile',name:profile.elements.name.value,signature:profile.elements.signature.value,tags:tags(profile.elements.tags.value),title:profile.elements.title.value,description:profile.elements.description.value,coverQuote:profile.elements.coverQuote.value,coverAuthor:profile.elements.coverAuthor.value,coverWallpaper,avatar}); } catch(error) { message(error.message,true); } });
-  posts.elements.selection.addEventListener('change',loadPost); moments.elements.selection.addEventListener('change',loadMoment); projects.elements.selection.addEventListener('change',loadProject); albums.elements.selection.addEventListener('change',loadAlbum);
+  posts.elements.selection.addEventListener('change',loadPost); moments.elements.selection.addEventListener('change',loadMoment); projects.elements.selection.addEventListener('change',loadProject); albums.elements.selection.addEventListener('change',() => { if (window.blogAlbumUnsaved) { albums.elements.selection.value = loadedAlbumSelection; message('请先完成当前相册的上传和保存，再切换相册。',true); return; } loadAlbum(); });
   posts.addEventListener('submit',async e => { e.preventDefault(); try { const payload = {kind:'post'}; for (const key of ['slug','title','category','excerpt','body','section']) payload[key] = posts.elements[key].value; payload.tags = tags(posts.elements.tags.value); payload.cover = postCover; await save(payload); posts.elements.selection.value = payload.slug; loadPost(); } catch(error) { message(error.message,true); } });
   moments.addEventListener('submit',async e => { e.preventDefault(); if (!byId('moment-service-warning').hidden) { message('请先重新启动博客编辑器。',true); return; } try { const index = Number(moments.elements.selection.value); await save({kind:'moment',index,text:moments.elements.text.value,mood:moments.elements.mood.value,tags:tags(moments.elements.tags.value),images:momentImages}); moments.elements.selection.value = String(index < 0 ? 0 : index); loadMoment(); } catch(error) { message(error.message,true); } });
   byId('delete-post').addEventListener('click',async () => { const p = data.posts.find(item => item.slug === posts.elements.selection.value); if (!p || !confirm(`确定删除文章“${p.title}”？删除后无法从编辑器恢复。`)) return; try { await save({kind:'delete-post',slug:p.slug}); posts.elements.selection.value = ''; loadPost(); message('文章已删除，上传的图片文件保留在本机。'); } catch(error) { message(error.message,true); } });
   byId('delete-moment').addEventListener('click',async () => { const index = Number(moments.elements.selection.value), m = data.moments[index]; if (!m || !confirm('确定删除这条动态？删除后无法从编辑器恢复。')) return; try { await save({kind:'delete-moment',index,date:m.date,text:m.text}); moments.elements.selection.value = '-1'; loadMoment(); message('动态已删除，上传的图片文件保留在本机。'); } catch(error) { message(error.message,true); } });
-  byId('delete-album').addEventListener('click',async () => { const index = Number(albums.elements.selection.value), album = data.albums[index]; if (!album || !confirm(`确定删除相册“${album.title}”？删除后无法从编辑器恢复。`)) return; try { await save({kind:'delete-album',index,album}); albums.elements.selection.value = '-1'; loadAlbum(); message('相册已删除，上传的图片文件保留在本机。'); } catch(error) { message(error.message,true); } });
-  albums.addEventListener('submit',async e => { e.preventDefault(); try { const index = Number(albums.elements.selection.value); await save({kind:'album',index,title:albums.elements.title.value,description:albums.elements.description.value,images:albumImages}); albums.elements.selection.value = String(index < 0 ? 0 : index); loadAlbum(); } catch(error) { message(error.message,true); } });
+  byId('delete-album').addEventListener('click',async () => { if (window.blogAlbumUnsaved) { message('请先完成当前相册的上传和保存。',true); return; } const index = Number(albums.elements.selection.value), album = data.albums[index]; if (!album || !confirm(`确定删除相册“${album.title}”？删除后无法从编辑器恢复。`)) return; try { await save({kind:'delete-album',index,album}); albums.elements.selection.value = '-1'; loadAlbum(); message('相册已删除，上传的图片文件保留在本机。'); } catch(error) { message(error.message,true); } });
+  albums.addEventListener('submit',async e => {
+    e.preventDefault(); if (albumSavePending) return;
+    const index = Number(albums.elements.selection.value), title = albums.elements.title.value, description = albums.elements.description.value;
+    const expectedAlbum = index < 0 ? undefined : loadedAlbumSnapshot;
+    if (!title.trim()) { message('请填写相册名称',true); return; }
+    albumSavePending = true; const pendingUpload = albumUploadPromise;
+    albums.elements.title.readOnly = true; albums.elements.description.readOnly = true; albumBusy(true);
+    try {
+      if (pendingUpload) { message('照片正在上传，完成后会自动保存，请保持页面打开。'); albumState('saving','照片正在上传，完成后自动保存，请保持页面打开'); await pendingUpload; }
+      if (albumFailedFiles.length) throw new Error('有照片上传失败，请先重试或放弃失败照片');
+      albumState('saving','照片上传完成，正在保存相册…');
+      await save({kind:'album',index,title,description,images:[...albumImages],expectedAlbum});
+      albums.elements.selection.value = String(index < 0 ? 0 : index); loadAlbum();
+      albumState('saved','相册保存完成');
+    } catch(error) { if (error.saveSucceeded) { message(error.message,true); albumState('saved','相册已保存，请刷新页面查看'); } else { message(error.message,true); albumState('failed',error.message || '保存失败，请返回编辑面板检查'); } }
+    finally { albumSavePending = false; albums.elements.title.readOnly = false; albums.elements.description.readOnly = false; albumBusy(false); }
+  });
   projects.addEventListener('submit',async e => { e.preventDefault(); try { const index = Number(projects.elements.selection.value), payload = {kind:'project',index}; for (const key of ['title','description','category','url','details','instructions']) payload[key] = projects.elements[key].value; payload.files = projectFiles; await save(payload); projects.elements.selection.value = String(index < 0 ? 0 : index); loadProject(); } catch(error) { message(error.message,true); } });
   about.addEventListener('submit',async e => { e.preventDefault(); try { const timeline = about.elements.timeline.value.split('\n').filter(line => line.trim()).map(line => { const [date='',title='',...rest] = line.split('|'); return {date,title,text:rest.join('|')}; }); await save({kind:'about',about:about.elements.about.value,github:about.elements.github.value,interests:tags(about.elements.interests.value),timeline}); } catch(error) { message(error.message,true); } });
   load().then(() => { if (params.get('slug')) posts.elements.selection.value = params.get('slug'); loadPost(); loadMoment(); loadProject(); loadAlbum(); if (['profile','posts','moments','albums','projects','about'].includes(params.get('panel'))) selectPanel(params.get('panel')); }).catch(error => message(error.message,true));

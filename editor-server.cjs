@@ -146,6 +146,7 @@ http.createServer((req,res) => {
           if (!Array.isArray(images) || images.length > 50) throw new Error('相册最多添加 50 张照片');
           const checked = images.map(imagePath); if (checked.some(x => !x)) throw new Error('照片路径无效');
           const old = index < 0 ? null : data.albums[index];
+          if (index >= 0 && payload.expectedAlbum !== undefined && JSON.stringify(old) !== JSON.stringify(payload.expectedAlbum)) throw new Error('相册已在其他位置更新，请刷新后重试');
           const next = {title,description,date:old?.date || today(),images:checked};
           if (index < 0) data.albums.unshift(next); else data.albums[index] = next;
         } else if (payload.kind === 'home') {

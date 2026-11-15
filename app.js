@@ -301,23 +301,28 @@
     } catch { const body = app.querySelector('.article-body'); if (body && location.hash === `#post/${encodeURIComponent(slug)}`) body.textContent = '文章加载失败。请通过本地服务器打开网站，并检查文章文件是否存在。'; }
   }
   function render(preserveScroll = false) { const route = location.hash.slice(1) || 'home'; const foundPost = route.startsWith('post/') ? config.posts.find(p => encodeURIComponent(p.slug) === route.slice(5)) : null; const section = route.startsWith('post/') ? postSection(foundPost) : route.startsWith('album/') ? 'albums' : route.startsWith('project/') ? 'projects' : route; document.body.classList.toggle('home-active',route === 'home'); document.querySelectorAll('[data-nav]').forEach(a => { const active = a.dataset.nav === section; a.classList.toggle('active', active); if (active) a.setAttribute('aria-current','page'); else a.removeAttribute('aria-current'); }); if (route === 'home') home(); else if (route === 'posts' || route === 'talk') postsPage(route); else if (route === 'moments') momentsPage(); else if (route === 'albums') albumsPage(); else if (/^album\/\d+$/.test(route)) albumPage(Number(route.slice(6))); else if (route === 'projects') projectsPage(); else if (route.startsWith('project/')) { try { projectPage(decodeURIComponent(route.slice(8))); } catch { projectsPage(); } } else if (route === 'about') about(); else if (route.startsWith('post/')) { try { postPage(decodeURIComponent(route.slice(5))); } catch { postsPage(); } } else home(); if (!app.querySelector('.chosen-home')) addPageQuote(route); addEditButton(section, route); if (!preserveScroll) window.scrollTo(0,0); }
+  let activeEditor = null;
+  window.addEventListener('beforeunload', event => {
+    if (activeEditor && activeEditor.hasPending()) { event.preventDefault(); event.returnValue = ''; }
+  });
   function addEditButton(section, route) {
     if (location.hostname !== '127.0.0.1' || location.port !== '4173') return;
     const panel = ({home:'profile',posts:'posts',talk:'posts',moments:'moments',albums:'albums',projects:'projects',about:'about'})[section];
     if (!panel) return;
     const button = document.createElement('button'); button.type = 'button'; button.className = 'page-edit'; button.textContent = '✎ 编辑此页';
     button.addEventListener('click', () => {
+      if (activeEditor) { activeEditor.open(); return; }
       const dialog = document.createElement('dialog'); dialog.className = 'edit-dialog';
       const close = document.createElement('button'); close.className = 'dialog-close'; close.type = 'button'; close.textContent = '关闭 ×';
       const frame = document.createElement('iframe'); frame.title = '编辑此页面';
+      const status = document.createElement('button'); status.type = 'button'; status.className = 'album-background-status'; status.hidden = true;
+      status.setAttribute('aria-live','polite');
       const slug = route.startsWith('post/') ? `&slug=${encodeURIComponent(decodeURIComponent(route.slice(5)))}` : '';
       frame.src = `/editor?panel=${panel}${slug}${section === 'talk' ? '&section=talk' : ''}&embedded=1`;
-      let saved = false;
-      const onMessage = event => { if (event.origin === location.origin && event.source === frame.contentWindow && event.data?.type === 'blog-editor-saved') saved = true; };
-      window.addEventListener('message', onMessage);
-      close.addEventListener('click', () => dialog.close());
-      dialog.addEventListener('close', async () => {
-        window.removeEventListener('message', onMessage); dialog.remove();
+      let saved = false, pending = false, disposed = false;
+      function hasPending() { try { return pending || !!frame.contentWindow?.blogAlbumUnsaved; } catch { return pending; } }
+      function cleanup() { if (disposed) return; disposed = true; window.removeEventListener('message',onMessage); dialog.remove(); if (activeEditor?.dialog === dialog) activeEditor = null; }
+      async function refreshSaved() {
         if (!saved) return;
         try {
           const res = await fetch('/api/data', {cache:'no-store'}); if (!res.ok) throw new Error('读取失败');
@@ -328,8 +333,30 @@
           document.querySelector('.github').href = safeUrl(config.github) || '#about';
           const y = window.scrollY; render(true); window.scrollTo({top:y,behavior:'instant'});
         } catch { alert('内容已保存，但页面更新失败，请手动刷新查看。'); }
+      }
+      const onMessage = event => {
+        if (event.origin !== location.origin || event.source !== frame.contentWindow) return;
+        if (event.data?.type === 'blog-editor-saved') { saved = true; return; }
+        if (event.data?.type !== 'blog-album-background') return;
+        const state = event.data.state;
+        pending = state !== 'saved' && state !== 'cancelled';
+        status.textContent = event.data.text || '查看相册上传状态';
+        status.hidden = dialog.open;
+        if ((state === 'saved' || state === 'cancelled') && !dialog.open) {
+          status.hidden = false; status.disabled = true; cleanup(); refreshSaved();
+          setTimeout(() => status.remove(),6000);
+        }
+      };
+      window.addEventListener('message', onMessage);
+      function open() { if (!dialog.open) dialog.showModal(); status.hidden = true; }
+      status.addEventListener('click',open);
+      close.addEventListener('click', () => dialog.close());
+      dialog.addEventListener('close', async () => {
+        if (hasPending()) { status.hidden = false; if (!status.textContent) status.textContent = '照片上传中，点击查看进度'; return; }
+        cleanup(); status.remove(); await refreshSaved();
       });
-      dialog.append(close, frame); document.body.append(dialog); dialog.showModal();
+      activeEditor = {dialog,open,hasPending};
+      dialog.append(close, frame); document.body.append(dialog,status); dialog.showModal();
     });
     app.prepend(button);
   }
