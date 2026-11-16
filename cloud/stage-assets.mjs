@@ -1,12 +1,13 @@
 // Stage the known public application shell only. Personal data and photos are
 // deliberately excluded; migration is handled separately and explicitly.
-import { copyFile, mkdir, readFile, writeFile } from 'node:fs/promises';
+import { copyFile, mkdir, readFile, readdir, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 const here = path.dirname(fileURLToPath(import.meta.url));
 const source = path.resolve(here, '..');
 const target = path.join(here, 'public');
-const files = ['index.html','app.js','config.js','style.css','home.css','editor.html','editor.js','editor.css','posts/hello-world.md','assets/wallpaper.png','assets/wallpaper-night.png','assets/uptime-mascot.png'];
+const files = ['index.html','app.js','emoji.js','emoji-picker.js','config.js','style.css','home.css','editor.html','editor.js','editor.css','posts/hello-world.md','assets/wallpaper.png','assets/wallpaper-night.png','assets/uptime-mascot.png'];
+for (const file of await readdir(path.join(source,'assets','emoji'))) if (/^[a-f0-9-]+\.svg$/.test(file)) files.push('assets/emoji/' + file);
 await mkdir(target, {recursive:true});
 for (const file of files) {
   await mkdir(path.dirname(path.join(target, file)), {recursive:true});

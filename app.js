@@ -6,6 +6,7 @@
   if (Array.isArray(data.projects)) config.projects = data.projects;
   for (const key of ['title','description','about','interests','timeline','github']) if (data.settings && Object.prototype.hasOwnProperty.call(data.settings,key)) config[key] = data.settings[key];
   const app = document.querySelector('#app');
+  if (window.BlogEmoji) window.BlogEmoji.observe(app);
   let isNight = false;
   try { isNight = localStorage.getItem('blog-theme') === 'night'; } catch {}
   // Warm the night cover while another page is open, before the home cover is rebuilt.

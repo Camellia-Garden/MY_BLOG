@@ -48,7 +48,7 @@ function postBody(post) {
   return fs.readFileSync(path.join(root,post.file),'utf8');
 }
 function reply(res, status, body, type = 'application/json; charset=utf-8') { res.writeHead(status, {'Content-Type':type,'Cache-Control':'no-store','X-Content-Type-Options':'nosniff'}); res.end(typeof body === 'string' || Buffer.isBuffer(body) ? body : JSON.stringify(body)); }
-const files = {'/':'index.html','/index.html':'index.html','/style.css':'style.css','/home.css':'home.css','/app.js':'app.js','/config.js':'config.js','/blog-data.js':'blog-data.js','/editor':'editor.html','/editor.html':'editor.html','/editor.js':'editor.js','/editor.css':'editor.css','/assets/wallpaper.png':'assets/wallpaper.png','/assets/wallpaper-night.png':'assets/wallpaper-night.png','/assets/uptime-mascot.png':'assets/uptime-mascot.png','/personal/character.png':'personal/character.png','/personal/character-mask.png':'personal/character-mask.png'};
+const files = {'/':'index.html','/index.html':'index.html','/style.css':'style.css','/home.css':'home.css','/app.js':'app.js','/emoji.js':'emoji.js','/emoji-picker.js':'emoji-picker.js','/config.js':'config.js','/blog-data.js':'blog-data.js','/editor':'editor.html','/editor.html':'editor.html','/editor.js':'editor.js','/editor.css':'editor.css','/assets/wallpaper.png':'assets/wallpaper.png','/assets/wallpaper-night.png':'assets/wallpaper-night.png','/assets/uptime-mascot.png':'assets/uptime-mascot.png','/personal/character.png':'personal/character.png','/personal/character-mask.png':'personal/character-mask.png'};
 http.createServer((req,res) => {
   try {
     const pathname = new URL(req.url,origin).pathname;
@@ -201,10 +201,11 @@ http.createServer((req,res) => {
     }
     if (req.method !== 'GET') return reply(res,405,'Method not allowed','text/plain; charset=utf-8');
     let file = files[pathname]; if (!file && /^\/posts\/[a-zA-Z0-9_-]+\.md$/.test(pathname)) file = pathname.slice(1);
+    if (!file && /^\/assets\/emoji\/[a-f0-9-]+\.svg$/.test(pathname)) file = pathname.slice(1);
     if (!file && /^\/personal\/wallpapers\/wallpaper-[0-9]{2}\.png$/.test(pathname)) file = pathname.slice(1);
     if (!file && /^\/personal\/uploads\/[a-f0-9-]{36}\.(png|jpg|webp|gif)$/.test(pathname)) file = pathname.slice(1);
     if (!file) return reply(res,404,'Not found','text/plain; charset=utf-8');
-    const ext = path.extname(file); const types = {'.html':'text/html; charset=utf-8','.css':'text/css; charset=utf-8','.js':'text/javascript; charset=utf-8','.md':'text/plain; charset=utf-8','.png':'image/png','.jpg':'image/jpeg','.gif':'image/gif','.webp':'image/webp'};
+    const ext = path.extname(file); const types = {'.html':'text/html; charset=utf-8','.css':'text/css; charset=utf-8','.js':'text/javascript; charset=utf-8','.md':'text/plain; charset=utf-8','.png':'image/png','.jpg':'image/jpeg','.gif':'image/gif','.webp':'image/webp','.svg':'image/svg+xml; charset=utf-8'};
     if (!fs.existsSync(path.join(root,file))) return reply(res,404,'Not found','text/plain; charset=utf-8');
     reply(res,200,['.png','.jpg','.gif','.webp'].includes(ext) ? fs.readFileSync(path.join(root,file)) : fs.readFileSync(path.join(root,file),'utf8'),types[ext] || 'text/plain; charset=utf-8');
   } catch(error) { reply(res,500,{error:error.message}); }
