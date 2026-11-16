@@ -50,7 +50,8 @@ test('validated image can be stored and accessed at its generated path', async (
   const upload = await worker.fetch(request('/api/image',{method:'POST',headers:{Origin:origin,Cookie:cookie,'X-Blog-Editor':'1','Content-Type':'image/png'},body:png}), env);
   assert.equal(upload.status, 200);
   const {url} = await upload.json();
-  const read = await worker.fetch(request(url), env);
+  assert.equal((await worker.fetch(request(url), env)).status,404);
+  const read = await worker.fetch(request(url,{headers:{Cookie:cookie}}), env);
   assert.equal(read.headers.get('Content-Type'), 'image/png');
   assert.deepEqual(new Uint8Array(await read.arrayBuffer()), png);
 });
@@ -90,8 +91,9 @@ test('project file uploads require admin and downloads are attachments', async (
   assert.equal((await worker.fetch(request('/api/project-file',{method:'POST',headers:{...headers,Origin:'https://other.example',Cookie:cookie},body:bytes}),env)).status,403);
   const upload = await worker.fetch(request('/api/project-file',{method:'POST',headers:{...headers,Cookie:cookie},body:bytes}),env);
   assert.equal(upload.status,200); const file = await upload.json();
-  assert.equal(file.name,'示例.zip'); assert.match(file.url,/^\/personal\/project-files\/[a-f0-9-]{36}$/);
-  const download = await worker.fetch(request(file.url),env);
+  assert.equal(file.name,'示例.zip'); assert.match(file.url,/^\/private\/files\/[a-f0-9-]{36}$/);
+  assert.equal((await worker.fetch(request(file.url),env)).status,404);
+  const download = await worker.fetch(request(file.url,{headers:{Cookie:cookie}}),env);
   assert.equal(download.status,200); assert.equal(download.headers.get('Content-Disposition'),'attachment');
   assert.equal(download.headers.get('Content-Type'),'application/octet-stream');
   assert.deepEqual(new Uint8Array(await download.arrayBuffer()),bytes);

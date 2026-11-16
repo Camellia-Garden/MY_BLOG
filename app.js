@@ -17,7 +17,7 @@
   applyTheme();
   const esc = value => String(value ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
   const safeUrl = value => /^(https?:\/\/|mailto:)/i.test(value || '') ? esc(value) : '';
-  const imageUrl = value => /^\/personal\/uploads\/[a-f0-9-]{36}\.(png|jpg|webp|gif)$/.test(value || '') ? esc(value) : '';
+  const imageUrl = value => /^\/(?:personal\/uploads|private\/images|public\/images)\/[a-f0-9-]{36}\.(png|jpg|webp|gif)$/.test(value || '') ? esc(value) : '';
   const date = value => esc(value).replace(/-/g, ' / ');
   const tags = post => post.tags || [];
   const postSection = post => post?.section === 'talk' ? 'talk' : 'posts';
@@ -39,7 +39,7 @@
     app.append(figure);
   }
 
-  const cards = posts => posts.map(post => `<div class="post-timeline-item"><a class="post-timeline-card glass" href="#post/${encodeURIComponent(post.slug)}">${imageUrl(post.cover) ? `<div class="post-timeline-cover"><img src="${imageUrl(post.cover)}" alt="" loading="lazy"></div>` : ''}<div class="post-timeline-copy"><div class="post-meta"><span class="category">${esc(post.category)}</span><span>${date(post.date)}</span></div><h3>${esc(post.title)}</h3><div class="card-tags">${tags(post).map(t => `<span># ${esc(t)}</span>`).join('')}</div><p>${esc(post.excerpt)}</p><div class="card-bottom"><span>${esc(post.reading)}</span><span class="read-link">阅读文章 ↗</span></div></div></a></div>`).join('');
+  const cards = posts => posts.map(post => `<div class="post-timeline-item"><a class="post-timeline-card glass" href="#post/${encodeURIComponent(post.slug)}">${imageUrl(post.cover) ? `<div class="post-timeline-cover"><img src="${imageUrl(post.cover)}" alt="" loading="lazy"></div>` : ''}<div class="post-timeline-copy"><div class="post-meta"><span class="category">${post.private ? '🔒 私密 · ' : ''}${esc(post.category)}</span><span>${date(post.date)}</span></div><h3>${esc(post.title)}</h3><div class="card-tags">${tags(post).map(t => `<span># ${esc(t)}</span>`).join('')}</div><p>${esc(post.excerpt)}</p><div class="card-bottom"><span>${esc(post.reading)}</span><span class="read-link">阅读文章 ↗</span></div></div></a></div>`).join('');
   const heading = (eyebrow, title, description) => `<div class="section-heading"><div><div class="eyebrow"><span></span>${eyebrow}</div><h2>${title}</h2></div><p>${description}</p></div>`;
   function profileCard() {
     const profile = data.profile || {};
@@ -86,11 +86,11 @@
   }
   let updatePage = 1;
   function updateEntries() {
-    const recorded = Array.isArray(data.activityLog) ? data.activityLog.filter(e => e && typeof e === 'object') : [];
+    const recorded = Array.isArray(data.activityLog) ? data.activityLog.filter(e => e && typeof e === 'object' && !e.privacyHidden) : [];
     const createdPosts = new Set(recorded.filter(e => e.type === 'post' && e.action === 'create').map(e => e.slug));
     const createdMoments = new Set(recorded.filter(e => e.type === 'moment' && e.action === 'create' && e.momentId).map(e => e.momentId));
-    const oldPosts = (config.posts || []).filter(p => p && !createdPosts.has(p.slug)).map(p => ({type:'post',action:'existing',at:p.date || '',slug:p.slug,title:p.title,section:postSection(p)}));
-    const oldMoments = (config.moments || []).filter(m => m && (!m.id || !createdMoments.has(m.id))).map(m => ({type:'moment',action:'existing',at:m.date || '',title:String(m.text || '').slice(0,100)}));
+    const oldPosts = (config.posts || []).filter(p => p && !p.private && !createdPosts.has(p.slug)).map(p => ({type:'post',action:'existing',at:p.date || '',slug:p.slug,title:p.title,section:postSection(p)}));
+    const oldMoments = (config.moments || []).filter(m => m && !m.private && (!m.id || !createdMoments.has(m.id))).map(m => ({type:'moment',action:'existing',at:m.date || '',title:String(m.text || '').slice(0,100)}));
     return [...recorded, ...oldPosts, ...oldMoments].sort((a,b) => String(b.at || '').localeCompare(String(a.at || '')));
   }
   function renderUpdateLog() {
@@ -196,7 +196,7 @@
     function update() {
       const query = input.value.trim().toLowerCase();
       const matches = moments.filter(m => [m.text,m.mood,...(m.tags || [])].some(value => String(value || '').toLowerCase().includes(query)));
-      grid.innerHTML = matches.map(m => `<article class="moment-card glass"><div class="moment-card-header"><span class="moment-mark">✳</span><time>${date(m.date)}</time>${m.mood ? `<span class="moment-mood">${esc(m.mood)}</span>` : ''}</div><p>${esc(m.text).replace(/\n/g,'<br>')}</p>${Array.isArray(m.images) && m.images.some(imageUrl) ? `<div class="moment-images ${m.images.length === 1 ? 'single' : ''}">${m.images.filter(imageUrl).map((src,i) => `<a href="${imageUrl(src)}" target="_blank" rel="noopener noreferrer"><img src="${imageUrl(src)}" alt="动态图片 ${i+1}" loading="lazy"></a>`).join('')}</div>` : ''}<div class="card-tags">${(m.tags || []).map(t => `<span># ${esc(t)}</span>`).join('')}</div></article>`).join('');
+      grid.innerHTML = matches.map(m => `<article class="moment-card glass"><div class="moment-card-header"><span class="moment-mark">✳</span><time>${m.private ? '🔒 私密 · ' : ''}${date(m.date)}</time>${m.mood ? `<span class="moment-mood">${esc(m.mood)}</span>` : ''}</div><p>${esc(m.text).replace(/\n/g,'<br>')}</p>${Array.isArray(m.images) && m.images.some(imageUrl) ? `<div class="moment-images ${m.images.length === 1 ? 'single' : ''}">${m.images.filter(imageUrl).map((src,i) => `<a href="${imageUrl(src)}" target="_blank" rel="noopener noreferrer"><img src="${imageUrl(src)}" alt="动态图片 ${i+1}" loading="lazy"></a>`).join('')}</div>` : ''}<div class="card-tags">${(m.tags || []).map(t => `<span># ${esc(t)}</span>`).join('')}</div></article>`).join('');
       empty.hidden = matches.length > 0; empty.textContent = moments.length ? '没有找到匹配的随笔。' : '还没有动态，期待第一条记录。';
     }
     input.addEventListener('input', update); update();
@@ -206,7 +206,7 @@
     app.innerHTML = `<section class="inner-page photo-wall">${heading('PHOTOGRAPHIC NOTES','光影集','人们无法判断一个瞬间的价值<br>直到它成为回忆')}<div class="album-grid"></div><p class="empty album-empty" hidden>没有找到相册。</p></section>`;
     const grid = app.querySelector('.album-grid'), empty = app.querySelector('.album-empty');
     const update = () => { const matches = albums.map((album,index) => ({album,index}));
-      grid.innerHTML = matches.map(({album,index}) => { const images = Array.isArray(album.images) ? album.images.filter(imageUrl) : []; const cover = imageUrl(images[0]); return `<a class="album-card" href="#album/${index}"><div class="album-stack"><div class="album-sheet album-sheet-back"></div><div class="album-sheet album-sheet-mid"></div>${cover ? `<img class="album-photo" src="${cover}" alt="" loading="lazy">` : '<div class="album-photo album-placeholder">✳</div>'}</div><div class="album-caption"><h2>${esc(album.title)}</h2><span>${date(album.date)}</span><p>${esc(album.description || '')}</p><small>${images.length} 张照片</small></div></a>`; }).join(''); empty.hidden = matches.length > 0; empty.textContent = albums.length ? '没有找到相册。' : '还没有相册，点击编辑此页添加第一组照片。'; };
+      grid.innerHTML = matches.map(({album,index}) => { const images = Array.isArray(album.images) ? album.images.filter(imageUrl) : []; const cover = imageUrl(images[0]); return `<a class="album-card" href="#album/${index}"><div class="album-stack"><div class="album-sheet album-sheet-back"></div><div class="album-sheet album-sheet-mid"></div>${cover ? `<img class="album-photo" src="${cover}" alt="" loading="lazy">` : '<div class="album-photo album-placeholder">✳</div>'}</div><div class="album-caption"><h2>${esc(album.title)}</h2><span>${album.private ? '🔒 私密 · ' : ''}${date(album.date)}</span><p>${esc(album.description || '')}</p><small>${images.length} 张照片</small></div></a>`; }).join(''); empty.hidden = matches.length > 0; empty.textContent = albums.length ? '没有找到相册。' : '还没有相册，点击编辑此页添加第一组照片。'; };
     update();
   }
   function albumPage(index) {
@@ -222,7 +222,7 @@
     function update() {
       const query = input.value.trim().toLowerCase();
       const matches = projects.filter(p => [p.title,p.category,p.description].some(value => String(value || '').toLowerCase().includes(query)));
-      grid.innerHTML = matches.map(p => { const key = p.id || `legacy-${projects.indexOf(p)}`; return `<a class="project-card glass" href="#project/${encodeURIComponent(key)}"><div class="project-top"><span class="project-icon">✺</span><span>↗</span></div><span class="category">${esc(p.category || '收藏')}</span><h3>${esc(p.title)}</h3><p>${esc(p.description || '')}</p></a>`; }).join('');
+      grid.innerHTML = matches.map(p => { const key = p.id || `legacy-${projects.indexOf(p)}`; return `<a class="project-card glass" href="#project/${encodeURIComponent(key)}"><div class="project-top"><span class="project-icon">✺</span><span>↗</span></div><span class="category">${p.private ? '🔒 私密 · ' : ''}${esc(p.category || '收藏')}</span><h3>${esc(p.title)}</h3><p>${esc(p.description || '')}</p></a>`; }).join('');
       empty.hidden = matches.length > 0; empty.textContent = projects.length ? '没有找到匹配的项目。' : '还没有收藏，慢慢添加吧。';
     }
     input.addEventListener('input', update); update();
@@ -233,7 +233,7 @@
     const project = legacy ? projects[Number(legacy[1])] : projects.find(p => p.id === key);
     if (!project) { projectsPage(); return; }
     const url = safeUrl(project.url);
-    const files = (Array.isArray(project.files) ? project.files : []).filter(file => file && /^\/personal\/project-files\/[a-f0-9-]{36}$/.test(file.url || '') && typeof file.name === 'string');
+    const files = (Array.isArray(project.files) ? project.files : []).filter(file => file && /^\/(?:personal\/project-files|private\/files|public\/files)\/[a-f0-9-]{36}$/.test(file.url || '') && typeof file.name === 'string');
     const section = (title, value) => value ? `<section class="project-detail-section"><h2>${title}</h2><p>${esc(value).replace(/\n/g,'<br>')}</p></section>` : '';
     app.innerHTML = `<section class="inner-page project-detail"><article class="glass project-detail-paper"><a class="back" href="#projects">← 返回造物集</a><header><span class="category">${esc(project.category || '收藏')}</span><h1>${esc(project.title)}</h1>${project.description ? `<p>${esc(project.description)}</p>` : ''}</header>${section('项目介绍',project.details)}${section('打开方式',project.instructions)}${files.length || url ? `<section class="project-detail-section"><h2>项目文件与链接</h2><div class="project-downloads">${files.map(file => `<a href="${esc(file.url)}" download="${esc(file.name)}">${esc(file.name)} <span>↓</span></a>`).join('')}${url ? `<a href="${url}" target="_blank" rel="noopener noreferrer">打开项目链接 <span>↗</span></a>` : ''}</div></section>` : ''}</article></section>`;
   }

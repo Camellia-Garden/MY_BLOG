@@ -23,7 +23,7 @@ function recordUpdate(data, entry) {
 }
 function text(value, max = 5000) { if (typeof value !== 'string' || value.length > max) throw new Error('输入内容无效或过长'); return value.trim(); }
 function list(value) { if (!Array.isArray(value) || value.length > 30) throw new Error('标签格式无效'); return value.map(v => text(v, 40)).filter(Boolean); }
-function imagePath(value) { if (typeof value !== 'string' || (value && !/^\/personal\/uploads\/[a-f0-9-]{36}\.(png|jpg|webp|gif)$/.test(value))) throw new Error('图片路径无效'); return value; }
+function imagePath(value) { if (typeof value !== 'string' || (value && !/^\/(?:personal\/uploads|private\/images|public\/images)\/[a-f0-9-]{36}\.(png|jpg|webp|gif)$/.test(value))) throw new Error('图片路径无效'); return value; }
 function postBody(post) { if (typeof post.body !== 'string') throw new Error('文章正文尚未迁移'); return post.body; }
 export function applyMutation(original, payload) {
   if (!original || typeof original !== 'object' || !payload || typeof payload !== 'object') throw new Error('请求数据无效');

@@ -52,7 +52,7 @@ async function imageUpload(request, env) {
   let bytes;
   try { bytes = await readLimited(request, MAX_IMAGE_BYTES); } catch (error) { if (error instanceof RangeError) return json({error:'图片不能超过 10 MB'}, 413); throw error; }
   if (!imageValid(bytes, type)) return json({error:'图片文件内容与格式不符'}, 400);
-  const path = `/personal/uploads/${crypto.randomUUID()}.${IMAGE_TYPES[type]}`;
+  const path = `/private/images/${crypto.randomUUID()}.${IMAGE_TYPES[type]}`;
   await env.IMAGES.put(path.slice(1), bytes, {httpMetadata:{contentType:type}});
   return json({url:path});
 }
@@ -61,20 +61,70 @@ async function projectFileUpload(request, env) {
   if (!name || name.length > 150) return json({error:'文件名无效或过长'},400);
   let bytes; try { bytes = await readLimited(request, 10 * 1024 * 1024); } catch (error) { if (error instanceof RangeError) return json({error:'文件不能超过 10 MB'},413); throw error; }
   if (!bytes.length) return json({error:'文件不能为空'},400);
-  const path = `/personal/project-files/${crypto.randomUUID()}`;
+  const path = `/private/files/${crypto.randomUUID()}`;
   await env.IMAGES.put(path.slice(1), bytes, {httpMetadata:{contentType:'application/octet-stream'}});
   return json({url:path,name});
 }
 async function projectFileRead(path, env) {
   const object = await env.IMAGES.get(path.slice(1)); if (!object) return new Response('Not found',{status:404});
-  return new Response(object.body,{headers:{'Content-Type':'application/octet-stream','Content-Disposition':'attachment','X-Content-Type-Options':'nosniff','Cache-Control':'public, max-age=3600'}});
+  return new Response(object.body,{headers:{'Content-Type':'application/octet-stream','Content-Disposition':'attachment','X-Content-Type-Options':'nosniff','Cache-Control':'private, no-store'}});
 }
 async function imageRead(path, env) {
   const object = await env.IMAGES.get(path.slice(1));
   if (!object) return new Response('Not found', {status:404});
-  const headers = new Headers({'Cache-Control':'public, max-age=3600', 'X-Content-Type-Options':'nosniff'});
+  const headers = new Headers({'Cache-Control':'private, no-store', 'X-Content-Type-Options':'nosniff'});
   object.writeHttpMetadata(headers);
+  headers.set('Cache-Control','private, no-store'); headers.set('Vary','Cookie');
   return new Response(object.body, {headers});
+}
+
+// Public data must be filtered on the server, before any response reaches a visitor.
+function publicData(data) {
+  const result = {...data};
+  delete result.privateBlockedAssets;
+  const privatePosts = new Set((data.posts || []).filter(item => item?.private).map(item => item.slug));
+  const privateMoments = new Set((data.moments || []).filter(item => item?.private && item.id).map(item => item.id));
+  const privateMomentTitles = new Set((data.moments || []).filter(item => item?.private).map(item => String(item.text || '').slice(0,100)));
+  for (const key of ['posts','moments','albums','projects']) if (Array.isArray(data[key])) result[key] = data[key].filter(item => !item?.private);
+  if (Array.isArray(data.activityLog)) result.activityLog = data.activityLog.filter(entry => !entry?.private && !entry?.privacyHidden && !(entry?.type === 'post' && privatePosts.has(entry.slug)) && !(entry?.type === 'moment' && (privateMoments.has(entry.momentId) || (!entry.momentId && privateMomentTitles.has(entry.title)))));
+  return result;
+}
+const IMAGE_PATH = /^\/(?:personal\/uploads|private\/images|public\/images)\/[a-f0-9-]{36}\.(png|jpg|webp|gif)$/;
+const FILE_PATH = /^\/(?:personal\/project-files|private\/files|public\/files)\/[a-f0-9-]{36}$/;
+const ASSET_PATTERN = /\/(?:personal\/uploads|private\/images|public\/images)\/[a-f0-9-]{36}\.(?:png|jpg|webp|gif)|\/(?:personal\/project-files|private\/files|public\/files)\/[a-f0-9-]{36}/g;
+async function protectContentAssets(env, data, payload) {
+  if (!['post','moment','album','project'].includes(payload.kind)) return;
+  const list = data[({post:'posts',moment:'moments',album:'albums',project:'projects'})[payload.kind]];
+  const item = payload.kind === 'post' ? list.find(p => p.slug === payload.slug) : list[Number(payload.index) < 0 ? 0 : Number(payload.index)];
+  if (!item) throw new Error('内容不存在');
+  const privateTarget = !!item.private, replacements = new Map();
+  const references = JSON.stringify(item).match(ASSET_PATTERN) || [];
+  const publicSnapshot = privateTarget ? JSON.stringify(publicData(data)) : '';
+  const permanentPublic = new Set(['/personal/uploads/2c5872b6-d19f-4cf1-84d9-e807db170772.png','/personal/uploads/965dc668-d762-4bbf-a539-b58766f4f6c2.png']);
+  if (privateTarget && references.some(path => (path.startsWith('/personal/') || path.startsWith('/public/')) && (publicSnapshot.includes(path) || permanentPublic.has(path)))) throw new Error('部分图片或文件仍被其他公开内容使用，请先移除共用文件或上传新的副本');
+  for (const original of references) {
+    const blocked = Array.isArray(data.privateBlockedAssets) && data.privateBlockedAssets.includes(original);
+    const alreadyCorrect = privateTarget ? original.startsWith('/private/') : (original.startsWith('/personal/') || original.startsWith('/public/'));
+    if (replacements.has(original) || (alreadyCorrect && !(blocked && !privateTarget))) continue;
+    const isImage = IMAGE_PATH.test(original), isFile = FILE_PATH.test(original);
+    if (!isImage && !isFile) continue;
+    const object = await env.IMAGES.get(original.slice(1)); if (!object) throw new Error('引用的图片或文件不存在，请重新上传');
+    const ext = isImage ? original.slice(original.lastIndexOf('.')) : '';
+    const target = isImage ? (privateTarget ? '/private/images/' : '/public/images/') : (privateTarget ? '/private/files/' : '/public/files/');
+    const next = `${target}${crypto.randomUUID()}${ext}`;
+    const types = {'.png':'image/png','.jpg':'image/jpeg','.webp':'image/webp','.gif':'image/gif'};
+    await env.IMAGES.put(next.slice(1),object.body,{httpMetadata:{contentType:isImage ? types[ext] : 'application/octet-stream'}});
+    replacements.set(original,next);
+    if (privateTarget && original.startsWith('/personal/')) { if (!Array.isArray(data.privateBlockedAssets)) data.privateBlockedAssets = []; if (!data.privateBlockedAssets.includes(original)) data.privateBlockedAssets.push(original); }
+  }
+  function rewrite(value) {
+    if (typeof value === 'string') return value.replace(ASSET_PATTERN, path => replacements.get(path) || path);
+    if (Array.isArray(value)) return value.map(rewrite);
+    if (value && typeof value === 'object') return Object.fromEntries(Object.entries(value).map(([key,v]) => [key,rewrite(v)]));
+    return value;
+  }
+  const updated = rewrite(item);
+  const index = list.indexOf(item); list[index] = updated;
 }
 
 export default {
@@ -94,10 +144,26 @@ export default {
       if (path === '/blog-data.js' && request.method === 'GET') {
         const state = await readState(env.DB);
         if (!state) return new Response('/* 博客数据尚未初始化 */', {status:503, headers:{'Content-Type':'application/javascript; charset=utf-8','Cache-Control':'no-store'}});
-        return new Response(`window.BLOG_DATA = ${JSON.stringify(state.data)};`, {headers:{'Content-Type':'application/javascript; charset=utf-8','Cache-Control':'no-store','X-Content-Type-Options':'nosniff'}});
+        const visible = await isAdmin(request, env) ? state.data : publicData(state.data);
+        return new Response(`window.BLOG_DATA = ${JSON.stringify(visible)};`, {headers:{'Content-Type':'application/javascript; charset=utf-8','Cache-Control':'private, no-store','Vary':'Cookie','X-Content-Type-Options':'nosniff'}});
       }
-      if (/^\/personal\/project-files\/[a-f0-9-]{36}$/.test(path) && request.method === 'GET') return await projectFileRead(path, env);
-      if (publicImagePath(path) && request.method === 'GET') return await imageRead(path, env);
+      if ((path.startsWith('/public/images/') || path.startsWith('/public/files/')) && request.method === 'GET') {
+        if (!IMAGE_PATH.test(path) && !FILE_PATH.test(path)) return new Response('Not found',{status:404});
+        const state = await readState(env.DB); if (!state) return new Response('Unavailable',{status:503,headers:{'Cache-Control':'no-store'}});
+        if (!JSON.stringify(publicData(state.data)).includes(path) && !(await isAdmin(request, env))) return new Response('Not found',{status:404,headers:{'Cache-Control':'private, no-store'}});
+        return IMAGE_PATH.test(path) ? await imageRead(path, env) : await projectFileRead(path, env);
+      }
+      if ((path.startsWith('/private/images/') || path.startsWith('/private/files/')) && request.method === 'GET') {
+        if (!(await isAdmin(request, env))) return new Response('Not found',{status:404,headers:{'Cache-Control':'private, no-store'}});
+        if (IMAGE_PATH.test(path)) return await imageRead(path, env);
+        if (FILE_PATH.test(path)) return await projectFileRead(path, env);
+        return new Response('Not found',{status:404});
+      }
+      if ((/^\/personal\/project-files\/[a-f0-9-]{36}$/.test(path) || publicImagePath(path)) && request.method === 'GET') {
+        const state = await readState(env.DB); if (!state) return new Response('Unavailable',{status:503,headers:{'Cache-Control':'no-store'}});
+        if (Array.isArray(state.data.privateBlockedAssets) && state.data.privateBlockedAssets.includes(path) && !(await isAdmin(request, env))) return new Response('Not found',{status:404,headers:{'Cache-Control':'private, no-store'}});
+        return FILE_PATH.test(path) ? await projectFileRead(path, env) : await imageRead(path, env);
+      }
       if (path === '/editor' || path === '/editor.html') {
         if (request.method !== 'GET') return json({error:'方法不支持'}, 405);
         if (!(await isAdmin(request, env))) return new Response('请先登录管理员账号', {status:401, headers:{'Cache-Control':'no-store'}});
@@ -127,6 +193,7 @@ export default {
         if (version !== `"${state.revision}"` && version !== `W/"${state.revision}"`) return json({error:'内容已在其他设备更新，请刷新后重试'}, 409);
         try {
           const updated = applyMutation(state.data, payload);
+          await protectContentAssets(env, updated, payload);
           await writeState(env.DB, state.revision, updated);
           return json({ok:true});
         } catch (error) { return json({error:error.message || '保存失败'}, 400); }
@@ -135,7 +202,7 @@ export default {
         if (!trustedOrigin(request, env)) return json({error:'请求来源无效'}, 403);
         return json({ok:true}, 200, {'Set-Cookie':`${SESSION_NAME}=; Path=/; Max-Age=0; HttpOnly; Secure; SameSite=Lax`});
       }
-      if (path.startsWith('/api/') || path.startsWith('/auth/') || path.startsWith('/personal/')) return new Response('Not found', {status:404});
+      if (path.startsWith('/api/') || path.startsWith('/auth/') || path.startsWith('/personal/') || path.startsWith('/private/') || path.startsWith('/public/')) return new Response('Not found', {status:404});
       return env.ASSETS.fetch(request);
     } catch { return json({error:'服务暂时不可用，请稍后重试'}, 500); }
   },

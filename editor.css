@@ -14,3 +14,5 @@
 #album-photo-error{color:#a34444;font-size:13px;line-height:1.5}
 
 .album-upload-recovery{display:flex;flex-wrap:wrap;gap:8px}.album-upload-recovery:has(>button:not([hidden])){margin-top:-12px}.album-upload-recovery button{border:1px solid #cbded1;border-radius:8px;background:#fff;color:#456657;padding:8px 12px;cursor:pointer}
+
+.editor-panel label.privacy-option{display:flex;align-items:center;gap:10px;font-size:13px}.privacy-option input{width:18px;height:18px;accent-color:#72998c}

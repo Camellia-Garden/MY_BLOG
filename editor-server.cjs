@@ -41,7 +41,7 @@ function recordUpdate(data, entry) {
 }
 function text(value, max = 5000) { if (typeof value !== 'string' || value.length > max) throw new Error('输入内容无效或过长'); return value.trim(); }
 function list(value) { if (!Array.isArray(value) || value.length > 30) throw new Error('标签格式无效'); return value.map(v => text(v, 40)).filter(Boolean); }
-function imagePath(value) { if (typeof value !== 'string' || (value && !/^\/personal\/uploads\/[a-f0-9-]{36}\.(png|jpg|webp|gif)$/.test(value))) throw new Error('图片路径无效'); return value; }
+function imagePath(value) { if (typeof value !== 'string' || (value && !/^\/(?:personal\/uploads|private\/images|public\/images)\/[a-f0-9-]{36}\.(png|jpg|webp|gif)$/.test(value))) throw new Error('图片路径无效'); return value; }
 function postBody(post) {
   if (typeof post.body === 'string') return post.body;
   if (!/^posts\/[a-zA-Z0-9_-]+\.md$/.test(post.file || '')) throw new Error('文章路径无效');
@@ -82,7 +82,7 @@ http.createServer((req,res) => {
       req.on('data',chunk => { size += chunk.length; if (size > 10 * 1024 * 1024) { tooLarge = true; chunks = []; } else if (!tooLarge) chunks.push(chunk); });
       req.on('end',() => { try { if (tooLarge || !size) return reply(res,400,{error:'文件不能为空且不能超过 10 MB'}); const id = crypto.randomUUID(), dir = path.join(root,'personal','project-files'); fs.mkdirSync(dir,{recursive:true}); fs.writeFileSync(path.join(dir,id),Buffer.concat(chunks),{flag:'wx'}); reply(res,200,{url:`/personal/project-files/${id}`,name}); } catch { reply(res,500,{error:'文件上传失败'}); } }); return;
     }
-    if (req.method === 'GET' && /^\/personal\/project-files\/[a-f0-9-]{36}$/.test(pathname)) {
+    if (req.method === 'GET' && /^\/(?:personal\/project-files|private\/files|public\/files)\/[a-f0-9-]{36}$/.test(pathname)) {
       const file = path.join(root,pathname.slice(1)); if (!fs.existsSync(file)) return reply(res,404,'Not found','text/plain; charset=utf-8');
       res.writeHead(200,{'Content-Type':'application/octet-stream','Content-Disposition':'attachment','X-Content-Type-Options':'nosniff'}); return fs.createReadStream(file).pipe(res);
     }
@@ -93,6 +93,23 @@ http.createServer((req,res) => {
       req.on('end',() => { try {
         const payload = JSON.parse(body), data = readData();
         data.activity ||= {};
+        if (payload.private !== undefined && typeof payload.private !== 'boolean') throw new Error('隐私设置无效');
+        const privateValue = old => payload.private === undefined ? !!old?.private : payload.private;
+        const setHistoryPrivacy = (kind, key, hidden, fallback = '', unambiguous = true) => {
+          if ((!key && !fallback) || !Array.isArray(data.activityLog)) return;
+          for (const entry of data.activityLog) {
+            const match = entry?.type === kind && (kind === 'post' ? entry.slug === key : (key && (entry.momentId === key || entry.privacyOwner === key)) || (!entry.momentId && fallback && entry.title === fallback));
+            if (!match) continue;
+            const day = String(entry.at || '').slice(0,10), counted = ['create','update'].includes(entry.action) && /^\d{4}-\d{2}-\d{2}$/.test(day);
+            if (hidden && !entry.privacyHidden) {
+              if (counted && unambiguous && Number(data.activity[day]) > 0) { data.activity[day] = Math.max(0,Number(data.activity[day]) - 1); entry.privacyContributionRemoved = true; }
+              entry.privacyHidden = true; if (kind === 'moment' && key) entry.privacyOwner = key;
+            } else if (!hidden && entry.privacyHidden) {
+              if (counted && entry.privacyContributionRemoved) data.activity[day] = (Number(data.activity[day]) || 0) + 1;
+              delete entry.privacyHidden; delete entry.privacyContributionRemoved; delete entry.privacyOwner;
+            }
+          }
+        };
         if (payload.kind === 'profile') {
           const avatar = payload.avatar || '';
           if (typeof avatar !== 'string' || avatar.length > 1400000 || (avatar && !/^data:image\/(png|jpeg|webp|gif);base64,[A-Za-z0-9+/=]+$/.test(avatar))) throw new Error('头像格式无效或图片过大');
@@ -108,30 +125,35 @@ http.createServer((req,res) => {
           const cover = imagePath(payload.cover || '');
           const section = payload.section === undefined ? (old?.section === 'talk' ? 'talk' : 'posts') : payload.section;
           if (!['posts','talk'].includes(section)) throw new Error('文章栏目无效');
-          const next = {slug,title,date:old?.date || nowMinute(),category:text(payload.category,40) || '随笔',tags:list(payload.tags),excerpt:text(payload.excerpt,300),reading:old?.reading || '阅读文章',body:content,cover,section};
-          const comparable = old && {slug:old.slug,title:old.title,date:old.date,category:old.category,tags:old.tags || [],excerpt:old.excerpt,reading:old.reading || '阅读文章',body:postBody(old).trim(),cover:old.cover || '',section:old.section === 'talk' ? 'talk' : 'posts'};
-          if (JSON.stringify(next) !== JSON.stringify(comparable)) { if (index < 0) data.posts.unshift(next); else data.posts[index] = next; data.activity[today()] = (data.activity[today()] || 0) + 1; recordUpdate(data,{type:'post',action:index < 0 ? 'create' : 'update',slug,title,section}); }
+          const isPrivate = privateValue(old);
+          const next = {private:isPrivate,slug,title,date:old?.date || nowMinute(),category:text(payload.category,40) || '随笔',tags:list(payload.tags),excerpt:text(payload.excerpt,300),reading:old?.reading || '阅读文章',body:content,cover,section};
+          const comparable = old && {private:!!old.private,slug:old.slug,title:old.title,date:old.date,category:old.category,tags:old.tags || [],excerpt:old.excerpt,reading:old.reading || '阅读文章',body:postBody(old).trim(),cover:old.cover || '',section:old.section === 'talk' ? 'talk' : 'posts'};
+          if (isPrivate) setHistoryPrivacy('post',slug,true); else if (old?.private) setHistoryPrivacy('post',slug,false);
+          if (JSON.stringify(next) !== JSON.stringify(comparable)) { if (index < 0) data.posts.unshift(next); else data.posts[index] = next; if (!isPrivate) { data.activity[today()] = (data.activity[today()] || 0) + 1; recordUpdate(data,{type:'post',action:index < 0 ? 'create' : 'update',slug,title,section}); } }
         } else if (payload.kind === 'moment') {
           if (!Array.isArray(data.moments)) data.moments = initial.moments;
           const content = text(payload.text,5000); if (!content) throw new Error('请填写动态内容');
           const index = Number(payload.index); if (!Number.isInteger(index) || index < -1 || index >= data.moments.length) throw new Error('动态不存在');
-          const old = index < 0 ? null : data.moments[index]; const images = payload.images || []; if (!Array.isArray(images) || images.length > 9) throw new Error('一条动态最多添加 9 张图片'); const next = {date:old?.date || nowMinute(),text:content,tags:list(payload.tags),images:images.map(imagePath)};
+          const old = index < 0 ? null : data.moments[index]; const images = payload.images || []; if (!Array.isArray(images) || images.length > 9) throw new Error('一条动态最多添加 9 张图片'); const isPrivate = privateValue(old); const next = {private:isPrivate,date:old?.date || nowMinute(),text:content,tags:list(payload.tags),images:images.map(imagePath)};
           const mood = payload.mood === undefined ? (old?.mood || '') : text(payload.mood,40);
           if (mood) next.mood = mood;
-          const comparable = old && {date:old.date,text:old.text,tags:old.tags || [],images:old.images || [],...(old.mood ? {mood:old.mood} : {})};
-          if (JSON.stringify(next) !== JSON.stringify(comparable)) { next.id = old?.id || crypto.randomUUID(); if (index < 0) data.moments.unshift(next); else data.moments[index] = next; data.activity[today()] = (data.activity[today()] || 0) + 1; recordUpdate(data,{type:'moment',action:index < 0 ? 'create' : 'update',momentId:next.id,title:content.slice(0,100)}); }
+          const comparable = old && {private:!!old.private,date:old.date,text:old.text,tags:old.tags || [],images:old.images || [],...(old.mood ? {mood:old.mood} : {})};
+          const momentId = old?.id || crypto.randomUUID(), fallback = old?.id ? '' : String(old?.text || '').slice(0,100);
+          const uniqueFallback = !fallback || data.moments.filter(m => String(m?.text || '').slice(0,100) === fallback).length <= 1;
+          if (isPrivate) setHistoryPrivacy('moment',momentId,true,fallback,uniqueFallback); else if (old?.private) setHistoryPrivacy('moment',momentId,false);
+          if (JSON.stringify(next) !== JSON.stringify(comparable)) { next.id = momentId; if (index < 0) data.moments.unshift(next); else data.moments[index] = next; if (!isPrivate) { data.activity[today()] = (data.activity[today()] || 0) + 1; recordUpdate(data,{type:'moment',action:index < 0 ? 'create' : 'update',momentId:next.id,title:content.slice(0,100)}); } }
         } else if (payload.kind === 'delete-post') {
           if (!Array.isArray(data.posts)) data.posts = initial.posts;
           const slug = text(payload.slug,80), index = data.posts.findIndex(p => p.slug === slug);
           if (index < 0) throw new Error('文章不存在，请刷新后重试');
           const removed = data.posts[index]; data.posts.splice(index,1);
-          recordUpdate(data,{type:'post',action:'delete',slug,title:removed.title,section:removed.section === 'talk' ? 'talk' : 'posts'});
+          if (!removed.private) recordUpdate(data,{type:'post',action:'delete',slug,title:removed.title,section:removed.section === 'talk' ? 'talk' : 'posts'}); else setHistoryPrivacy('post',slug,true);
         } else if (payload.kind === 'delete-moment') {
           if (!Array.isArray(data.moments)) data.moments = initial.moments;
           const index = Number(payload.index), old = data.moments[index];
           if (!Number.isInteger(index) || index < 0 || !old || old.date !== payload.date || old.text !== payload.text) throw new Error('动态已变化或不存在，请刷新后重试');
           data.moments.splice(index,1);
-          recordUpdate(data,{type:'moment',action:'delete',momentId:old.id || '',title:String(old.text || '').slice(0,100)});
+          if (!old.private) recordUpdate(data,{type:'moment',action:'delete',momentId:old.id || '',title:String(old.text || '').slice(0,100)}); else setHistoryPrivacy('moment',old.id,true,String(old.text || '').slice(0,100));
         } else if (payload.kind === 'delete-album') {
           if (!Array.isArray(data.albums)) data.albums = [];
           const index = Number(payload.index), old = data.albums[index];
@@ -147,7 +169,7 @@ http.createServer((req,res) => {
           const checked = images.map(imagePath); if (checked.some(x => !x)) throw new Error('照片路径无效');
           const old = index < 0 ? null : data.albums[index];
           if (index >= 0 && payload.expectedAlbum !== undefined && JSON.stringify(old) !== JSON.stringify(payload.expectedAlbum)) throw new Error('相册已在其他位置更新，请刷新后重试');
-          const next = {title,description,date:old?.date || today(),images:checked};
+          const next = {title,description,date:old?.date || today(),images:checked,private:privateValue(old)};
           if (index < 0) data.albums.unshift(next); else data.albums[index] = next;
         } else if (payload.kind === 'home') {
           data.settings ||= {};
@@ -169,8 +191,8 @@ http.createServer((req,res) => {
           const old = index < 0 ? null : data.projects[index];
           const files = payload.files === undefined ? (old?.files || []) : payload.files;
           if (!Array.isArray(files) || files.length > 20) throw new Error('每个项目最多添加 20 个文件');
-          const checkedFiles = files.map(file => { const name = text(file.name,150), link = text(file.url,1000); if (!name || !/^\/personal\/project-files\/[a-f0-9-]{36}$/.test(link)) throw new Error('项目文件无效'); return {name,url:link}; });
-          const next = {...old,id:old?.id || crypto.randomUUID(),title,description:text(payload.description,1000),category:text(payload.category,40) || '收藏',url,details:text(payload.details === undefined ? (old?.details || '') : payload.details,10000),instructions:text(payload.instructions === undefined ? (old?.instructions || '') : payload.instructions,10000),files:checkedFiles};
+          const checkedFiles = files.map(file => { const name = text(file.name,150), link = text(file.url,1000); if (!name || !/^\/(?:personal\/project-files|private\/files|public\/files)\/[a-f0-9-]{36}$/.test(link)) throw new Error('项目文件无效'); return {name,url:link}; });
+          const next = {...old,id:old?.id || crypto.randomUUID(),private:privateValue(old),title,description:text(payload.description,1000),category:text(payload.category,40) || '收藏',url,details:text(payload.details === undefined ? (old?.details || '') : payload.details,10000),instructions:text(payload.instructions === undefined ? (old?.instructions || '') : payload.instructions,10000),files:checkedFiles};
           if (index < 0) data.projects.unshift(next); else data.projects[index] = next;
         } else throw new Error('未知的保存类型');
         writeData(data); reply(res,200,{ok:true});
