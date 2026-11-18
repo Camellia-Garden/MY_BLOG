@@ -1,3 +1,5 @@
+import schedule from '../schedule-core.cjs';
+const {materializeDue} = schedule;
 import { readState, writeState } from './d1-state.mjs';
 import { applyMutation } from './mutate-blog.mjs';
 import { verifySession } from './admin-session.mjs';
@@ -79,13 +81,14 @@ async function imageRead(path, env) {
 }
 
 // Public data must be filtered on the server, before any response reaches a visitor.
-function publicData(data) {
+function publicData(source) {
+  const data = materializeDue(structuredClone(source));
   const result = {...data};
   delete result.privateBlockedAssets;
-  const privatePosts = new Set((data.posts || []).filter(item => item?.private).map(item => item.slug));
-  const privateMoments = new Set((data.moments || []).filter(item => item?.private && item.id).map(item => item.id));
-  const privateMomentTitles = new Set((data.moments || []).filter(item => item?.private).map(item => String(item.text || '').slice(0,100)));
-  for (const key of ['posts','moments','albums','projects']) if (Array.isArray(data[key])) result[key] = data[key].filter(item => !item?.private);
+  const privatePosts = new Set((data.posts || []).filter(item => (item?.private || item?.scheduledAt)).map(item => item.slug));
+  const privateMoments = new Set((data.moments || []).filter(item => (item?.private || item?.scheduledAt) && item.id).map(item => item.id));
+  const privateMomentTitles = new Set((data.moments || []).filter(item => (item?.private || item?.scheduledAt)).map(item => String(item.text || '').slice(0,100)));
+  for (const key of ['posts','moments','albums','projects']) if (Array.isArray(data[key])) result[key] = data[key].filter(item => !item?.private && !item?.scheduledAt);
   if (Array.isArray(data.activityLog)) result.activityLog = data.activityLog.filter(entry => !entry?.private && !entry?.privacyHidden && !(entry?.type === 'post' && privatePosts.has(entry.slug)) && !(entry?.type === 'moment' && (privateMoments.has(entry.momentId) || (!entry.momentId && privateMomentTitles.has(entry.title)))));
   return result;
 }
@@ -100,6 +103,7 @@ async function protectContentAssets(env, data, payload) {
   const privateTarget = !!item.private, replacements = new Map();
   const references = JSON.stringify(item).match(ASSET_PATTERN) || [];
   const publicSnapshot = privateTarget ? JSON.stringify(publicData(data)) : '';
+  if (item.scheduledAt && references.some(path => path.startsWith('/personal/') && !(data.privateBlockedAssets || []).includes(path))) throw new Error('定时内容不能使用旧公开图片或文件，请重新上传副本');
   const permanentPublic = new Set(['/personal/uploads/2c5872b6-d19f-4cf1-84d9-e807db170772.png','/personal/uploads/965dc668-d762-4bbf-a539-b58766f4f6c2.png']);
   if (privateTarget && references.some(path => (path.startsWith('/personal/') || path.startsWith('/public/')) && (publicSnapshot.includes(path) || permanentPublic.has(path)))) throw new Error('部分图片或文件仍被其他公开内容使用，请先移除共用文件或上传新的副本');
   for (const original of references) {
@@ -144,7 +148,7 @@ export default {
       if (path === '/blog-data.js' && request.method === 'GET') {
         const state = await readState(env.DB);
         if (!state) return new Response('/* 博客数据尚未初始化 */', {status:503, headers:{'Content-Type':'application/javascript; charset=utf-8','Cache-Control':'no-store'}});
-        const visible = await isAdmin(request, env) ? state.data : publicData(state.data);
+        const visible = await isAdmin(request, env) ? materializeDue(structuredClone(state.data)) : publicData(state.data);
         return new Response(`window.BLOG_DATA = ${JSON.stringify(visible)};`, {headers:{'Content-Type':'application/javascript; charset=utf-8','Cache-Control':'private, no-store','Vary':'Cookie','X-Content-Type-Options':'nosniff'}});
       }
       if ((path.startsWith('/public/images/') || path.startsWith('/public/files/')) && request.method === 'GET') {
@@ -174,7 +178,7 @@ export default {
       if (path === '/api/data' && request.method === 'GET') {
         if (!(await isAdmin(request, env))) return json({error:'请先登录'}, 401);
         const state = await readState(env.DB);
-        return state ? json(state.data, 200, {'ETag':`"${state.revision}"`,'X-Blog-Revision':state.revision}) : json({error:'博客数据尚未初始化'}, 503);
+        return state ? json(materializeDue(structuredClone(state.data)), 200, {'ETag':`"${state.revision}"`,'X-Blog-Revision':state.revision}) : json({error:'博客数据尚未初始化'}, 503);
       }
       if ((path === '/api/save' || path === '/api/image' || path === '/api/project-file') && request.method === 'POST') {
         if (!trustedOrigin(request, env)) return json({error:'请求来源无效'}, 403);

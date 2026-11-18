@@ -8,6 +8,8 @@ if (start < 0 || end < 0) throw new Error('The local editor structure changed; i
 const rules = source.slice(start, end);
 const prefix = String.raw`
 // Generated from the local editor's validated mutation rules.
+import schedule from '../schedule-core.cjs';
+const {materializeDue} = schedule;
 const initial = {posts: [], moments: [], projects: []};
 function timestamp() {
   const parts = new Intl.DateTimeFormat('en-CA', {timeZone:'Asia/Shanghai', year:'numeric', month:'2-digit', day:'2-digit', hour:'2-digit', minute:'2-digit', hourCycle:'h23'}).formatToParts(new Date());
@@ -27,7 +29,7 @@ function imagePath(value) { if (typeof value !== 'string' || (value && !/^\/(?:p
 function postBody(post) { if (typeof post.body !== 'string') throw new Error('文章正文尚未迁移'); return post.body; }
 export function applyMutation(original, payload) {
   if (!original || typeof original !== 'object' || !payload || typeof payload !== 'object') throw new Error('请求数据无效');
-  const data = structuredClone(original);
+  const data = materializeDue(structuredClone(original));
 `;
 const suffix = '\n  return data;\n}\n';
 await writeFile(new URL('./mutate-blog.mjs', import.meta.url), prefix + rules + suffix, 'utf8');

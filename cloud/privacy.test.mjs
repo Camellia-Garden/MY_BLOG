@@ -5,6 +5,7 @@ import {issueSession} from './admin-session.mjs';
 import {initializeState, readState} from './d1-state.mjs';
 import {createTestDatabase} from './test-db.mjs';
 import {applyMutation} from './mutate-blog.mjs';
+import schedule from '../schedule-core.cjs';
 
 const origin='https://privacy.example', secret='privacy-test-secret-abcdefghijklmnopqrstuvwxyz-0123456789';
 function req(path,opts){return new Request(origin+path,opts)}
@@ -102,3 +103,36 @@ test('private legacy moments hide unidentified matching history',async()=>{
  const publicText=await (await worker.fetch(req('/blog-data.js'),env)).text(); assert.ok(!publicText.includes('旧私密动态'));
  const state=await readState(env.DB); assert.equal(state.data.activity['2026-11-01'],0); assert.equal(state.data.activityLog[0].privacyHidden,true);
 });
+
+ test('scheduled content and assets stay hidden until publication, including private content',async()=>{
+ const {env,cookie}=await setup(); const png=Uint8Array.from([137,80,78,71,13,10,26,10,0,0]);
+ const upload=await worker.fetch(req('/api/image',{method:'POST',headers:{Origin:origin,Cookie:cookie,'X-Blog-Editor':'1','Content-Type':'image/png'},body:png}),env); const {url}=await upload.json();
+ const scheduledAt=new Date(Date.now()+2500).toISOString();
+ const items=[{kind:'post',slug:'scheduled',title:'scheduled-post',body:'body',category:'',tags:[],excerpt:'',cover:url,section:'posts'}, {kind:'moment',index:-1,text:'scheduled-moment',tags:[],images:[]}, {kind:'album',index:-1,title:'scheduled-album',description:'',images:[]}, {kind:'project',index:-1,title:'scheduled-project',description:'',category:'',url:'',details:'',instructions:'',files:[]}, {kind:'post',slug:'scheduled-private',title:'scheduled-private',body:'body',category:'',tags:[],excerpt:'',cover:'',section:'posts',private:true}];
+ for(const item of items) { const res=await save(env,cookie,{...item,scheduledAt}); assert.equal(res.status,200,JSON.stringify(await res.json())); }
+ const state=await readState(env.DB), path=state.data.posts.find(p=>p.slug==='scheduled').cover;
+ let text=await (await worker.fetch(req('/blog-data.js'),env)).text(); assert.doesNotMatch(text,/scheduled-post|scheduled-moment|scheduled-album|scheduled-project|scheduled-private/); assert.equal((await worker.fetch(req(path),env)).status,404);
+ assert.deepEqual(state.data.activity,{}); assert.equal(state.data.activityLog.length,0);
+ await new Promise(resolve=>setTimeout(resolve,2700));
+ text=await (await worker.fetch(req('/blog-data.js'),env)).text(); for(const name of ['scheduled-post','scheduled-moment','scheduled-album','scheduled-project']) assert.ok(text.includes(name)); assert.ok(!text.includes('scheduled-private'));
+ assert.equal((await worker.fetch(req(path),env)).status,200);
+ const admin=await (await worker.fetch(req('/api/data',{headers:{Cookie:cookie}}),env)).json(); assert.equal(admin.activityLog.length,4); assert.equal(Object.values(admin.activity).reduce((a,b)=>a+b,0),4);
+ assert.equal((await save(env,cookie,{kind:'home',title:'x',description:'y'})).status,200);
+ const saved=await readState(env.DB); assert.equal(saved.data.activityLog.length,4); assert.equal(Object.values(saved.data.activity).reduce((a,b)=>a+b,0),4);
+ });
+
+test('schedule boundaries and already public content are validated on the server',()=>{
+ const blank={posts:[],moments:[],albums:[],projects:[],activity:{},activityLog:[]}; const post={kind:'post',slug:'time-test',title:'title',body:'body',category:'',tags:[],excerpt:'',cover:'',section:'posts'};
+ for (const t of [new Date(Date.now()-1000).toISOString(),new Date(Date.now()+8*86400000).toISOString(),'garbage']) assert.throws(()=>applyMutation(blank,{...post,scheduledAt:t}));
+ const publicState=applyMutation(blank,post); assert.throws(()=>applyMutation(publicState,{...post,scheduledAt:new Date(Date.now()+60000).toISOString()}),/已发布/);
+ const pending=applyMutation(blank,{...post,scheduledAt:new Date(Date.now()+60000).toISOString()}); const immediate=applyMutation(pending,{...post,scheduledAt:''}); assert.equal(immediate.activityLog.length,1); assert.equal(immediate.activityLog[0].action,'create');
+});
+
+ test('scheduled album and project history follows later privacy changes',()=>{
+ const blank={posts:[],moments:[],albums:[],projects:[],activity:{},activityLog:[]}; const when=new Date(Date.now()+60000).toISOString();
+ const album={kind:'album',index:-1,title:'album',description:'',images:[],scheduledAt:when}; const project={kind:'project',index:-1,title:'project',description:'',category:'',url:'',details:'',instructions:'',files:[],scheduledAt:when};
+ let pending=applyMutation(blank,album); pending=applyMutation(pending,project);
+ const {materializeDue}=schedule; const published=materializeDue(structuredClone(pending),Date.parse(when)); assert.equal(published.activityLog.length,2);
+ let hidden=applyMutation(published,{...album,index:0,private:true,scheduledAt:''}); hidden=applyMutation(hidden,{...project,index:0,private:true,scheduledAt:''});
+ assert.ok(hidden.activityLog.every(x=>x.privacyHidden)); assert.equal(Object.values(hidden.activity).reduce((a,b)=>a+b,0),0);
+ });

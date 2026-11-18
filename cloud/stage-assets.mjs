@@ -32,7 +32,7 @@ app = replaceOnce(app, '  const app = document.querySelector(\'#app\');', "  con
 app = replaceOnce(app, "    if (location.hostname !== '127.0.0.1' || location.port !== '4173') return;", '    if (!cloudAdmin) return;', 'edit visibility');
 const commentAnchor = "    try {\n      let content = post.body;";
 const commentMount = `    const comments = app.querySelector('.comments-placeholder');
-    if (comments && post.private) { comments.remove(); }
+    if (comments && (post.private || post.scheduledAt)) { comments.remove(); }
     else if (comments) {
       comments.replaceChildren();
       comments.classList.add('comments-active');

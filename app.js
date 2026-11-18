@@ -90,8 +90,8 @@
     const recorded = Array.isArray(data.activityLog) ? data.activityLog.filter(e => e && typeof e === 'object' && !e.privacyHidden) : [];
     const createdPosts = new Set(recorded.filter(e => e.type === 'post' && e.action === 'create').map(e => e.slug));
     const createdMoments = new Set(recorded.filter(e => e.type === 'moment' && e.action === 'create' && e.momentId).map(e => e.momentId));
-    const oldPosts = (config.posts || []).filter(p => p && !p.private && !createdPosts.has(p.slug)).map(p => ({type:'post',action:'existing',at:p.date || '',slug:p.slug,title:p.title,section:postSection(p)}));
-    const oldMoments = (config.moments || []).filter(m => m && !m.private && (!m.id || !createdMoments.has(m.id))).map(m => ({type:'moment',action:'existing',at:m.date || '',title:String(m.text || '').slice(0,100)}));
+    const oldPosts = (config.posts || []).filter(p => p && !p.private && !p.scheduledAt && !createdPosts.has(p.slug)).map(p => ({type:'post',action:'existing',at:p.date || '',slug:p.slug,title:p.title,section:postSection(p)}));
+    const oldMoments = (config.moments || []).filter(m => m && !m.private && !m.scheduledAt && (!m.id || !createdMoments.has(m.id))).map(m => ({type:'moment',action:'existing',at:m.date || '',title:String(m.text || '').slice(0,100)}));
     return [...recorded, ...oldPosts, ...oldMoments].sort((a,b) => String(b.at || '').localeCompare(String(a.at || '')));
   }
   function renderUpdateLog() {
@@ -101,7 +101,7 @@
     const profile = data.profile || {}, name = profile.name || config.name;
     const avatar = /^data:image\/(png|jpeg|webp|gif);base64,[A-Za-z0-9+/=]+$/.test(profile.avatar || '') ? `<img src="${esc(profile.avatar)}" alt="">` : '<span aria-hidden="true">✳</span>';
     const rows = entries.slice((updatePage - 1) * 10, updatePage * 10).map(entry => {
-      const kind = entry.type === 'moment' ? '浮生记' : entry.section === 'talk' ? '世间谈' : '研习录';
+      const kind = entry.type === 'album' ? '光影集' : entry.type === 'project' ? '造物集' : entry.type === 'moment' ? '浮生记' : entry.section === 'talk' ? '世间谈' : '研习录';
       const action = ({create:'发布了',update:'更新了',delete:'删除了',existing:'已有记录 ·'})[entry.action] || '记录了';
       const title = esc(entry.title || (entry.type === 'moment' ? '一则随笔' : '未命名'));
       const exists = entry.type === 'post' && entry.action !== 'delete' && (config.posts || []).some(p => p.slug === entry.slug);
